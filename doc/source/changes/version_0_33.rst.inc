@@ -45,6 +45,8 @@ New features
      - It works for foo bar !
      - It does not work for foo baz !
 
+* `subplots` argument of :py:obj:`Array.plot()` now accepts an axis (or tuple of them) in addition to a
+  boolean to specify *which* axes to use as subplots.
 
 .. _misc:
 

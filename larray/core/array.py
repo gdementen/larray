@@ -324,6 +324,125 @@ class ArrayIterator(object):
         return self
 
 
+def _plot_array(array, *args, **kwargs):
+    if array.ndim == 1:
+        pd_obj = array.to_series()
+    else:
+        # combine all axes except the last one
+        combined = array.combine_axes(array.axes[:-1], sep=' ') if array.ndim > 2 else array
+        pd_obj = combined.transpose().to_frame()
+    return pd_obj.plot(*args, **kwargs)
+
+
+def _use_pandas_plot_docstring(f):
+    f.__doc__ = getattr(pd.DataFrame.plot, f.__name__).__doc__
+    return f
+
+
+class PlotObject(object):
+    __slots__ = ('array',)
+
+    def __init__(self, array):
+        self.array = array
+
+    def __call__(self, *args, ax=None, subplots=False, layout=None, figsize=None, sharex=None, sharey=False,
+                 tight_layout=None, constrained_layout=None, title=None, legend=True, **kwargs):
+        from matplotlib.figure import Figure
+
+        array = self.array
+        if not isinstance(subplots, bool):
+            if ax is not None:
+                raise ValueError("ax cannot be used in combination with a non bool subplots argument")
+            if constrained_layout is None:
+                constrained_layout = True
+            fig = Figure(figsize=figsize, tight_layout=tight_layout, constrained_layout=constrained_layout)
+            axes = array.axes[subplots]
+            if isinstance(axes, Axis):
+                axes = AxisCollection(axes)
+            num_subplots = axes.size
+            if layout is None:
+                if len(axes) > 2:
+                    raise ValueError("layout argument must be used for subplots on 3 axes or more")
+                else:
+                    layout = axes.shape
+
+            if sharex is None:
+                sharex = True
+            ax = fig.subplots(*layout, sharex=sharex, sharey=sharey)
+            # it is easier to always work with a flat array
+            flat_ax = ax.flat
+            # remove blank plot(s) at the end, if any
+            if len(flat_ax) > num_subplots:
+                for plot_ax in flat_ax[num_subplots:]:
+                    plot_ax.remove()
+                flat_ax = flat_ax[:num_subplots]
+            if title is not None:
+                fig.suptitle(title)
+            for i, (ndkey, subarr) in enumerate(array.items(axes)):
+                title = ' '.join(str(ak) for ak in ndkey)
+                _plot_array(subarr, *args, ax=flat_ax[i], legend=False, title=title, **kwargs)
+            subplot_axes = array.axes - axes
+            # if there is a single series per subplot, a legend is useless
+            if len(subplot_axes) == 1:
+                legend = False
+            # add a single legend for all subplots
+            if legend:
+                handles, labels = flat_ax[0].get_legend_handles_labels()
+                # TODO: we should implement this functionality for the non-axes-subplot path too
+                legend_kwargs = legend if isinstance(legend, dict) else {}
+                if 'title' not in legend_kwargs:
+                    legend_kwargs['title'] = ' '.join(subplot_axes[:-1].names)
+                fig.legend(handles, labels, **legend_kwargs)
+            return ax
+        else:
+            return _plot_array(array, *args, ax=ax, figsize=figsize, legend=legend,
+                               subplots=subplots, sharex=sharex, sharey=sharey, layout=layout, title=title, **kwargs)
+
+    @_use_pandas_plot_docstring
+    def line(self, x=None, y=None, **kwds):
+        return self(kind='line', x=x, y=y, **kwds)
+
+    @_use_pandas_plot_docstring
+    def bar(self, x=None, y=None, **kwds):
+        return self(kind='bar', x=x, y=y, **kwds)
+
+    @_use_pandas_plot_docstring
+    def barh(self, x=None, y=None, **kwds):
+        return self(kind='barh', x=x, y=y, **kwds)
+
+    @_use_pandas_plot_docstring
+    def box(self, by=None, **kwds):
+        return self(kind='box', by=by, **kwds)
+
+    @_use_pandas_plot_docstring
+    def hist(self, by=None, bins=10, **kwds):
+        return self(kind='hist', by=by, bins=bins, **kwds)
+
+    @_use_pandas_plot_docstring
+    def kde(self, bw_method=None, ind=None, **kwds):
+        return self(kind='kde', bw_method=bw_method, ind=ind, **kwds)
+
+    @_use_pandas_plot_docstring
+    def area(self, x=None, y=None, **kwds):
+        return self(kind='area', x=x, y=y, **kwds)
+
+    @_use_pandas_plot_docstring
+    def pie(self, y=None, **kwds):
+        return self(kind='pie', y=y, **kwds)
+
+    @_use_pandas_plot_docstring
+    def scatter(self, x, y, s=None, c=None, **kwds):
+        return self(kind='scatter', x=x, y=y, c=c, s=s, **kwds)
+
+    @_use_pandas_plot_docstring
+    def hexbin(self, x, y, C=None, reduce_C_function=None, gridsize=None, **kwds):
+        if reduce_C_function is not None:
+            kwds['reduce_C_function'] = reduce_C_function
+        if gridsize is not None:
+            kwds['gridsize'] = gridsize
+        return self(kind='hexbin', x=x, y=y, C=C, **kwds)
+
+
 # TODO: rename to ArrayIndexIndexer or something like that
 # TODO: the first slice in the example below should be documented
 class ArrayPositionalIndexer(object):
@@ -6879,8 +6998,10 @@ class Array(ABCArray):
             - 'scatter' : scatter plot (if array's dimensions >= 2)
             - 'hexbin' : hexbin plot (if array's dimensions >= 2)
         ax : matplotlib axes object, default None
-        subplots : boolean, default False
-            Make separate subplots for each column
+        subplots : boolean, Axis, int, str or tuple, default False
+            Make several subplots. If True, will make subplots for each combination of labels for all axes except the
+            last. If an Axis, int, str (or tuple of those), it will make subplots for combination of labels of those
+            axes.
         sharex : boolean, default True if ax is None else False
             In case subplots=True, share x axis and set some x axis labels to invisible;
             defaults to True if ax is None otherwise False if an ax is passed in;
@@ -6897,7 +7018,7 @@ class Array(ABCArray):
         grid : boolean, default None (matlab style default)
             Axis grid lines
         legend : False/True/'reverse'
-            Place legend on axis subplots
+            Place legend on axis subplots. Defaults to True.
         style : list or dict
             matplotlib line style per column
         logx : boolean, default False
@@ -6923,8 +7044,6 @@ class Array(ABCArray):
         position : float
             Specify relative alignments for bar plot layout. From 0 (left/bottom-end) to 1 (right/top-end).
             Default is 0.5 (center)
-        layout : tuple (optional)
-            (rows, columns) for the layout of the plot
         yerr : array-like
             Error bars on y axis
         xerr : array-like
@@ -6944,45 +7063,46 @@ class Array(ABCArray):
 
         Examples
         --------
-        >>> import matplotlib.pyplot as plt # doctest: +SKIP
-        >>> a = ndtest('gender=M,F;age=0..20')
+        >>> import matplotlib.pyplot as plt                                    # doctest: +SKIP
+        >>> # let us define an array with some made up data
+        >>> arr = Array([[5, 20, 5, 10], [6, 16, 8, 11]], 'gender=M,F;year=2018..2021')
 
         Simple line plot
 
-        >>> a.plot() # doctest: +SKIP
-        >>> # shows figure (reset the current figure after showing it! Do not call it before savefig)
-        >>> plt.show() # doctest: +SKIP
+        >>> arr.plot()                                                         # doctest: +SKIP
+        >>> # show figure (it also resets it after showing it! Do not call it before savefig)
+        >>> plt.show()                                                         # doctest: +SKIP
 
-        Line plot with grid, title and both axes in logscale
+        Line plot with grid and a title
 
-        >>> a.plot(grid=True, loglog=True, title='line plot') # doctest: +SKIP
-        >>> # saves figure in a file (see matplotlib.pyplot.savefig documentation for more details)
-        >>> plt.savefig('my_file.png') # doctest: +SKIP
+        >>> arr.plot(grid=True, title='line plot')                             # doctest: +SKIP
+        >>> # save figure in a file (see matplotlib.pyplot.savefig documentation for more details)
+        >>> plt.savefig('my_file.png')                                         # doctest: +SKIP
 
-        2 bar plots sharing the same x axis (one for males and one for females)
+        2 bar plots (one for each gender) sharing the same y axis, which makes sub plots
+        easier to compare. By default sub plots are independant of each other and the axes
+        ranges are computed to "fit" just the data for their individual plot.
 
-        >>> a.plot.bar(subplots=True, sharex=True) # doctest: +SKIP
-        >>> plt.show() # doctest: +SKIP
+        >>> arr.plot.bar(subplots='gender', sharey=True)                       # doctest: +SKIP
+        >>> plt.show()                                                         # doctest: +SKIP
 
         Create a figure containing 2 x 2 graphs
 
         >>> # see matplotlib.pyplot.subplots documentation for more details
-        >>> fig, ax = plt.subplots(2, 2, figsize=(15, 15)) # doctest: +SKIP
-        >>> # 2 curves : Males and Females
-        >>> a.plot(ax=ax[0, 0], title='line plot') # doctest: +SKIP
-        >>> # bar plot with stacked values
-        >>> a.plot.bar(ax=ax[0, 1], stacked=True, title='stacked bar plot') # doctest: +SKIP
-        >>> # same as previously but with colored areas instead of bars
-        >>> a.plot.area(ax=ax[1, 0], title='area plot') # doctest: +SKIP
-        >>> # scatter plot
-        >>> a.plot.scatter(ax=ax[1, 1], x='M', y='F', title='scatter plot') # doctest: +SKIP
-        >>> plt.show() # doctest: +SKIP
+        >>> fig, ax = plt.subplots(2, 2, figsize=(15, 15))                     # doctest: +SKIP
+        >>> # line plot with 2 curves (Males and Females) in the top left corner (0, 0)
+        >>> arr.plot(ax=ax[0, 0], title='line plot')                           # doctest: +SKIP
+        >>> # bar plot with stacked values in the top right corner (0, 1)
+        >>> arr.plot.bar(ax=ax[0, 1], stacked=True, title='stacked bar plot')  # doctest: +SKIP
+        >>> # area plot in the bottom left corner (1, 0)
+        >>> arr.plot.area(ax=ax[1, 0], title='area plot')                      # doctest: +SKIP
+        >>> # scatter plot in the bottom right corner (1, 1)
+        >>> arr.plot.scatter(ax=ax[1, 1], x='M', y='F', title='scatter plot')  # doctest: +SKIP
+        >>> arr.plot.scatter(ax=ax[1, 1], x='M', y='F', c=arr.year, colormap='viridis',
+        ...                  title='scatter plot')                             # doctest: +SKIP
+        >>> plt.show()                                                         # doctest: +SKIP
         """
-        combined = self.combine_axes(self.axes[:-1], sep=' ') if self.ndim > 2 else self
-        if combined.ndim == 1:
-            return combined.to_series().plot
-        else:
-            return combined.transpose().to_frame().plot
+        return PlotObject(self)
 
     @property
     def shape(self):
