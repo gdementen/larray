@@ -1,8 +1,10 @@
 import re
 import os
+import faulthandler
 
 import pytest
 import numpy as np
+import pywintypes
 
 from larray.tests.common import needs_xlwings, needs_pytables
 from larray import ndtest, open_excel, asarray, Axis, nan, ExcelReport
@@ -16,10 +18,20 @@ class TestWorkbook(object):
         # not using context manager because we call .quit manually
         wb1 = open_excel(visible=False)
         app1 = wb1.app
+        # close workbook but leave app instance open (anything using wb1 will fail now)
         wb1.close()
-        # anything using wb1 will fail
-        with pytest.raises(Exception):
+
+        # disable faulthandler to avoid annoying "Windows fatal exception" messages in the console
+        # See https://github.com/pywinauto/pywinauto/issues/858
+        # and https://stackoverflow.com/questions/57523762/pytest-windows-fatal-exception-code-0x8001010d
+        faulthandler_enabled = faulthandler.is_enabled()
+        if faulthandler_enabled:
+            faulthandler.disable()
+        with pytest.raises(pywintypes.com_error):
             wb1.sheet_names()
+        if faulthandler_enabled:
+            faulthandler.enable()
+
         wb2 = open_excel(visible=False)
         app2 = wb2.app
         assert app1 == app2 == xw_excel.global_app
@@ -27,8 +39,12 @@ class TestWorkbook(object):
         # reference to it).
         app1.quit()
         # anything using wb2 will fail
-        with pytest.raises(Exception):
+        if faulthandler_enabled:
+            faulthandler.disable()
+        with pytest.raises(pywintypes.com_error):
             wb2.sheet_names()
+        if faulthandler_enabled:
+            faulthandler.enable()
 
         # in any case, this should work
         with open_excel(visible=False) as wb:
