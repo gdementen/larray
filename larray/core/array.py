@@ -1,6 +1,3 @@
-# -*- coding: utf8 -*-
-from __future__ import absolute_import, division, print_function
-
 """
 Array class
 """
@@ -29,11 +26,15 @@ Array class
 # * use larray "utils" in LIAM2 (to avoid duplicated code)
 
 from collections import OrderedDict
-from itertools import product, chain, groupby, islice, repeat
+from itertools import product, chain, groupby
+from collections.abc import Iterable, Sequence
+import builtins
 import os
 import sys
 import functools
 import warnings
+
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -52,14 +53,13 @@ from larray.core.abstractbases import ABCArray
 from larray.core.constants import nan
 from larray.core.metadata import Metadata
 from larray.core.expr import ExprNode
-from larray.core.group import (Group, IGroup, LGroup, remove_nested_groups, _to_key, _to_keys,
+from larray.core.group import (Group, IGroup, LGroup, _to_key, _to_keys,
                                _translate_sheet_name, _translate_group_key_hdf)
-from larray.core.axis import Axis, AxisReference, AxisCollection, X, _make_axis
+from larray.core.axis import Axis, AxisReference, AxisCollection, X, _make_axis         # noqa: F401
 from larray.util.misc import (table2str, size2str, ReprString,
                               float_error_handler_factory, light_product, common_type,
                               renamed_to, deprecate_kwarg, LHDFStore, lazy_attribute, unique_multi, SequenceZip,
                               Repeater, Product, ensure_no_numpy_type)
-from larray.util.compat import PY2, basestring, Iterable, Sequence, builtins
 from larray.util.options import _OPTIONS, DISPLAY_MAXLINES, DISPLAY_EDGEITEMS, DISPLAY_WIDTH, DISPLAY_PRECISION
 
 
@@ -305,49 +305,54 @@ def concat(arrays, axis=0, dtype=None):
     return result
 
 
-if PY2:
-    class ArrayIterator(object):
-        __slots__ = ('next',)
+class ArrayIterator(object):
+    __slots__ = ('__next__',)
 
-        def __init__(self, array):
-            data_iter = iter(array.data)
-            next_data_func = data_iter.next
-            res_axes = array.axes[1:]
-            # this case should not happen (handled by the fastpath in Array.__iter__)
-            assert len(res_axes) > 0
+    def __init__(self, array):
+        data_iter = iter(array.data)
+        next_data_func = data_iter.__next__
+        res_axes = array.axes[1:]
+        # this case should not happen (handled by the fastpath in Array.__iter__)
+        assert len(res_axes) > 0
 
-            def next_func():
-                return Array(next_data_func(), res_axes)
+        def next_func():
+            return Array(next_data_func(), res_axes)
 
-            self.next = next_func
+        self.__next__ = next_func
 
-        def __iter__(self):
-            return self
-else:
-    class ArrayIterator(object):
-        __slots__ = ('__next__',)
-
-        def __init__(self, array):
-            data_iter = iter(array.data)
-            next_data_func = data_iter.__next__
-            res_axes = array.axes[1:]
-            # this case should not happen (handled by the fastpath in Array.__iter__)
-            assert len(res_axes) > 0
-
-            def next_func():
-                return Array(next_data_func(), res_axes)
-
-            self.__next__ = next_func
-
-        def __iter__(self):
-            return self
+    def __iter__(self):
+        return self
 
 
 # TODO: rename to ArrayIndexIndexer or something like that
+# TODO: the first slice in the example below should be documented
 class ArrayPositionalIndexer(object):
-    """
-    equivalent to numpy indexing when indexing along a single axis *but* indexes the cross product of multiple axes
-    instead of points
+    r"""
+    Allows selection of a subset using indices of labels.
+
+    Notes
+    -----
+    Using .i[] is equivalent to numpy indexing when indexing along a single axis. However, when indexing along multiple
+    axes this indexes the cross product instead of points.
+
+    Examples
+    --------
+    >>> arr = ndtest((2, 3, 4))
+    >>> arr
+     a  b\c  c0  c1  c2  c3
+    a0   b0   0   1   2   3
+    a0   b1   4   5   6   7
+    a0   b2   8   9  10  11
+    a1   b0  12  13  14  15
+    a1   b1  16  17  18  19
+    a1   b2  20  21  22  23
+
+    >>> arr.i[:, 0:2, [0, 2]]
+     a  b\c  c0  c2
+    a0   b0   0   2
+    a0   b1   4   6
+    a1   b0  12  14
+    a1   b1  16  18
     """
     __slots__ = ('array',)
 
@@ -362,7 +367,7 @@ class ArrayPositionalIndexer(object):
         if not isinstance(key, tuple):
             key = (key,)
         if len(key) > self.array.ndim:
-            raise IndexError("key has too many indices (%d) for array with %d dimensions" % (len(key), self.array.ndim))
+            raise IndexError(f"key has too many indices ({len(key)}) for array with {self.array.ndim} dimensions")
         # no need to create a full nd key as that will be done later anyway
         return tuple(axis.i[axis_key]
                      for axis_key, axis in zip(key, self.array.axes))
@@ -405,25 +410,48 @@ class ArrayPositionalIndexer(object):
 
 
 class ArrayPointsIndexer(object):
+    r"""
+    Allows selection of arbitrary items in the array based on their N-dimensional label index.
+
+    Examples
+    --------
+    >>> arr = ndtest((2, 3, 4))
+    >>> arr
+     a  b\c  c0  c1  c2  c3
+    a0   b0   0   1   2   3
+    a0   b1   4   5   6   7
+    a0   b2   8   9  10  11
+    a1   b0  12  13  14  15
+    a1   b1  16  17  18  19
+    a1   b2  20  21  22  23
+
+    To select the two points with label coordinates
+    [a0, b0, c0] and [a1, b2, c2], you must do:
+
+    >>> arr.points[['a0', 'a1'], ['b0', 'b2'], ['c0', 'c2']]
+    a_b_c  a0_b0_c0  a1_b2_c2
+                  0        22
+    >>> arr.points['a0,a1', 'b0,b2', 'c0,c2']
+    a_b_c  a0_b0_c0  a1_b2_c2
+                  0        22
+
+    The number of label(s) on each dimension must be equal:
+
+    >>> arr.points['a0,a1', 'b0,b2', 'c0,c1,c2']  # doctest: +NORMALIZE_WHITESPACE
+    Traceback (most recent call last):
+        ...
+    ValueError: all combined keys should have the same length
+    """
     __slots__ = ('array',)
 
     def __init__(self, array):
         self.array = array
 
-    def _prepare_key(self, key, wildcard=False):
-        axes = self.array.axes
-        # 1) complete key & translate (those two cannot be dissociated because to complete
-        #    the key we need to know which axis each key belongs to and to do that, we need to
-        #    translate the key to indices)
-        translated_key = axes._translated_key(key)
-        # 2) transform keys to IGroup and non-Array advanced keys to Array with a combined axis
-        return axes._adv_keys_to_combined_axis_la_keys(translated_key, wildcard)
-
     def __getitem__(self, key):
-        return self.array.__getitem__(self._prepare_key(key), translate_key=False)
+        return self.array.__getitem__(key, points=True)
 
     def __setitem__(self, key, value):
-        self.array.__setitem__(self._prepare_key(key, wildcard=True), value, translate_key=False)
+        self.array.__setitem__(key, value, points=True)
 
 
 # TODO: add support for slices
@@ -488,15 +516,7 @@ class ArrayFlatIndicesIndexer(object):
             flat_np_key = np.asarray(flat_key)
             axes = self.array.axes
             nd_key = np.unravel_index(flat_np_key, axes.shape)
-            # the following lines are equivalent to (but faster than) "return array.ipoints[nd_key]"
-
-            # TODO: extract a function which only computes the combined axes because we do not use the actual Arrays
-            #       produced here, which is wasteful. AxisCollection._flat_lookup seems related (but not usable as-is).
-            la_key = axes._adv_keys_to_combined_axis_la_keys(nd_key, sep=sep)
-            first_axis_key_axes = la_key[0].axes
-            assert all(isinstance(axis_key, ABCArray) and axis_key.axes is first_axis_key_axes
-                       for axis_key in la_key[1:])
-            res_axes = first_axis_key_axes
+            res_axes = axes._adv_keys_to_combined_axes(nd_key, sep=sep)
         return Array(self.array.data.flat[flat_np_key], res_axes)
 
     def __setitem__(self, flat_key, value):
@@ -508,24 +528,49 @@ class ArrayFlatIndicesIndexer(object):
 
 
 # TODO: rename to ArrayIndexPointsIndexer or something like that
+# TODO: show that we need to use a "full slice" for leaving the dimension alone
+# TODO: document explicitly that axes should be in the correct order and missing axes should be slice None
+# (except at the end)
 class ArrayPositionalPointsIndexer(object):
+    r"""
+    Allows selection of arbitrary items in the array based on their N-dimensional index.
+
+    Examples
+    --------
+    >>> arr = ndtest((2, 3, 4))
+    >>> arr
+     a  b\c  c0  c1  c2  c3
+    a0   b0   0   1   2   3
+    a0   b1   4   5   6   7
+    a0   b2   8   9  10  11
+    a1   b0  12  13  14  15
+    a1   b1  16  17  18  19
+    a1   b2  20  21  22  23
+
+    To select the two points with index coordinates
+    [0, 0, 0] and [1, 2, 2], you must do:
+
+    >>> arr.ipoints[[0,1], [0,2], [0,2]]
+    a_b_c  a0_b0_c0  a1_b2_c2
+                  0        22
+
+    The number of index(es) on each dimension must be equal:
+
+    >>> arr.ipoints[[0,1], [0,2], [0,1,2]]  # doctest: +NORMALIZE_WHITESPACE
+    Traceback (most recent call last):
+        ...
+    ValueError: all combined keys should have the same length
+    """
     __slots__ = ('array',)
-    """
-    the closest to numpy indexing we get, but not 100% the same.
-    """
+
     def __init__(self, array):
         self.array = array
 
-    def _prepare_key(self, key, wildcard=False):
-        return self.array.axes._adv_keys_to_combined_axis_la_keys(key, wildcard)
-
     def __getitem__(self, key):
-        return self.array.__getitem__(self._prepare_key(key), translate_key=False)
+        return self.array.__getitem__(key, translate_key=False, points=True)
 
     def __setitem__(self, key, value):
-        # we still need to prepare the key instead of letting numpy handle everything so that
-        # existing (integer)Array keys are broadcasted correctly (using axes names).
-        self.array.__setitem__(self._prepare_key(key, wildcard=True), value, translate_key=False)
+        self.array.__setitem__(key, value, translate_key=False, points=True)
 
 
 def get_axis(obj, i):
@@ -612,9 +657,8 @@ def _doc_agg_method(func, by=False, long_name='', action_verb='perform', extra_a
         long_name = func.__name__
 
     _args = ','.join(extra_args) + ', ' if len(extra_args) > 0 else ''
-    _kwargs = ', '.join(["{}={!r}".format(k, _kwarg_agg[k]['value']) for k in kwargs]) + ', ' if len(kwargs) > 0 else ''
-    signature = '{name}({args}*axes_and_groups, {kwargs}**explicit_axes)'.format(name=func.__name__,
-                                                                                 args=_args, kwargs=_kwargs)
+    _kwargs = ', '.join([f"{k}={_kwarg_agg[k]['value']!r}" for k in kwargs]) + ', ' if len(kwargs) > 0 else ''
+    signature = f'{func.__name__}({_args}*axes_and_groups, {_kwargs}**explicit_axes)'
 
     if by:
         specific_template = """The {long_name} is {action_verb}ed along all axes except the given one(s).
@@ -625,9 +669,9 @@ def _doc_agg_method(func, by=False, long_name='', action_verb='perform', extra_a
 
     doc_args = "".join(_arg_agg[arg] for arg in extra_args)
     doc_kwargs = "".join(_kwarg_agg[kw]['doc'] for kw in kwargs)
-    doc_varargs = r"""
+    doc_varargs = fr"""
         \*axes_and_groups : None or int or str or Axis or Group or any combination of those
-            {specific}
+            {doc_specific}
             The default (no axis or group) is to {action_verb} the {long_name} over all the dimensions of the input
             array.
 
@@ -650,10 +694,9 @@ def _doc_agg_method(func, by=False, long_name='', action_verb='perform', extra_a
               than one axis, you must precise the axis.
             * ('a1:a3; a5:a7', b='b0,b2; b1,b3') : create several groups with semicolons.
               Names are simply given by the concatenation of labels (here: 'a1,a2,a3', 'a5,a6,a7', 'b0,b2' and 'b1,b3')
-            * ('a1:a3 >> a123', 'b[b0,b2] >> b12') : operator ' >> ' allows to rename groups."""\
-        .format(specific=doc_specific, action_verb=action_verb, long_name=long_name)
-    parameters = """Parameters
-        ----------{args}{varargs}{kwargs}""".format(args=doc_args, varargs=doc_varargs, kwargs=doc_kwargs)
+            * ('a1:a3 >> a123', 'b[b0,b2] >> b12') : operator ' >> ' allows to rename groups."""
+    parameters = f"""Parameters
+        ----------{doc_args}{doc_varargs}{doc_kwargs}"""
     func.__doc__ = func.__doc__.format(signature=signature, parameters=parameters)
 
 
@@ -691,8 +734,8 @@ def _handle_meta(meta, title):
         return meta
     # XXX: move this test in Metadata.__init__?
     if not isinstance(meta, (list, dict, OrderedDict)):
-        raise TypeError("Expected None, list of pairs, dict, OrderedDict or Metadata object "
-                        "instead of {}".format(type(meta).__name__))
+        raise TypeError(f"Expected None, list of pairs, dict, OrderedDict or Metadata object "
+                        f"instead of {type(meta).__name__}")
     return Metadata(meta)
 
 
@@ -803,12 +846,11 @@ class Array(ABCArray):
             if not isinstance(axes, AxisCollection):
                 axes = AxisCollection(axes)
             if axes.ndim != ndim:
-                raise ValueError("number of axes (%d) does not match "
-                                 "number of dimensions of data (%d)"
-                                 % (axes.ndim, ndim))
+                raise ValueError(f"number of axes ({axes.ndim}) does not match "
+                                 f"number of dimensions of data ({ndim})")
             if axes.shape != data.shape:
-                raise ValueError("length of axes %s does not match "
-                                 "data shape %s" % (axes.shape, data.shape))
+                raise ValueError(f"length of axes {axes.shape} does not match "
+                                 f"data shape {data.shape}")
 
         self.data = data
         self.axes = axes
@@ -826,8 +868,8 @@ class Array(ABCArray):
     def title(self, title):
         import warnings
         warnings.warn("title attribute is deprecated. Please use meta.title instead", FutureWarning, stacklevel=2)
-        if not isinstance(title, basestring):
-            raise TypeError("Expected string value, got {}".format(type(title).__name__))
+        if not isinstance(title, str):
+            raise TypeError(f"Expected string value, got {type(title).__name__}")
         self._meta.title = title
 
     @property
@@ -1001,10 +1043,10 @@ class Array(ABCArray):
         new_axes = self.axes.replace(axes_to_replace, new_axis, **kwargs)
         if inplace:
             if new_axes.ndim != self.ndim:
-                raise ValueError("number of axes (%d) does not match number of dimensions of data (%d)"
-                                 % (new_axes.ndim, self.ndim))
+                raise ValueError(f"number of axes ({new_axes.ndim}) does not match number of dimensions "
+                                 f"of data ({self.ndim})")
             if new_axes.shape != self.data.shape:
-                raise ValueError("length of axes %s does not match data shape %s" % (new_axes.shape, self.data.shape))
+                raise ValueError(f"length of axes {new_axes.shape} does not match data shape {self.data.shape}")
             self.axes = new_axes
             return self
         else:
@@ -1016,7 +1058,8 @@ class Array(ABCArray):
         if key in self.axes:
             return self.axes[key]
         else:
-            raise AttributeError("'{}' object has no attribute '{}'".format(self.__class__.__name__, key))
+            class_name = self.__class__.__name__
+            raise AttributeError(f"'{class_name}' object has no attribute '{key}'")
 
     # needed to make *un*pickling work (because otherwise, __getattr__ is called before .axes exists, which leads to
     # an infinite recursion)
@@ -1034,104 +1077,20 @@ class Array(ABCArray):
     def _ipython_key_completions_(self):
         return list(chain(*[list(labels) for labels in self.axes.labels]))
 
-    # TODO: the first slice in example below should be documented
     @lazy_attribute
     def i(self):
-        r"""
-        Allows selection of a subset using indices of labels.
-
-        Examples
-        --------
-        >>> arr = ndtest((2, 3, 4))
-        >>> arr
-         a  b\c  c0  c1  c2  c3
-        a0   b0   0   1   2   3
-        a0   b1   4   5   6   7
-        a0   b2   8   9  10  11
-        a1   b0  12  13  14  15
-        a1   b1  16  17  18  19
-        a1   b2  20  21  22  23
-
-        >>> arr.i[:, 0:2, [0, 2]]
-         a  b\c  c0  c2
-        a0   b0   0   2
-        a0   b1   4   6
-        a1   b0  12  14
-        a1   b1  16  18
-        """
         return ArrayPositionalIndexer(self)
+    i.__doc__ = ArrayPositionalIndexer.__doc__
 
     @lazy_attribute
     def points(self):
-        r"""
-        Allows selection of arbitrary items in the array based on their N-dimensional label index.
-
-        Examples
-        --------
-        >>> arr = ndtest((2, 3, 4))
-        >>> arr
-         a  b\c  c0  c1  c2  c3
-        a0   b0   0   1   2   3
-        a0   b1   4   5   6   7
-        a0   b2   8   9  10  11
-        a1   b0  12  13  14  15
-        a1   b1  16  17  18  19
-        a1   b2  20  21  22  23
-
-        To select the two points with label coordinates
-        [a0, b0, c0] and [a1, b2, c2], you must do:
-
-        >>> arr.points[['a0', 'a1'], ['b0', 'b2'], ['c0', 'c2']]
-        a_b_c  a0_b0_c0  a1_b2_c2
-                      0        22
-        >>> arr.points['a0,a1', 'b0,b2', 'c0,c2']
-        a_b_c  a0_b0_c0  a1_b2_c2
-                      0        22
-
-        The number of label(s) on each dimension must be equal:
-
-        >>> arr.points['a0,a1', 'b0,b2', 'c0,c1,c2'] # doctest: +NORMALIZE_WHITESPACE
-        Traceback (most recent call last):
-            ...
-        IndexError: shape mismatch: indexing arrays could not be broadcast together with shapes (2,) (2,) (3,)
-        """
         return ArrayPointsIndexer(self)
+    points.__doc__ = ArrayPointsIndexer.__doc__
 
-    # TODO: show that we need to use a "full slice" for leaving the dimension alone
-    # TODO: document explicitly that axes should be in the correct order and missing axes should be slice None
-    # (except at the end)
     @lazy_attribute
     def ipoints(self):
-        r"""
-        Allows selection of arbitrary items in the array based on their N-dimensional index.
-
-        Examples
-        --------
-        >>> arr = ndtest((2, 3, 4))
-        >>> arr
-         a  b\c  c0  c1  c2  c3
-        a0   b0   0   1   2   3
-        a0   b1   4   5   6   7
-        a0   b2   8   9  10  11
-        a1   b0  12  13  14  15
-        a1   b1  16  17  18  19
-        a1   b2  20  21  22  23
-
-        To select the two points with index coordinates
-        [0, 0, 0] and [1, 2, 2], you must do:
-
-        >>> arr.ipoints[[0,1], [0,2], [0,2]]
-        a_b_c  a0_b0_c0  a1_b2_c2
-                      0        22
-
-        The number of index(es) on each dimension must be equal:
-
-        >>> arr.ipoints[[0,1], [0,2], [0,1,2]] # doctest: +NORMALIZE_WHITESPACE
-        Traceback (most recent call last):
-            ...
-        IndexError: shape mismatch: indexing arrays could not be broadcast together with shapes (2,) (2,) (3,)
-        """
         return ArrayPositionalPointsIndexer(self)
+    ipoints.__doc__ = ArrayPositionalPointsIndexer.__doc__
 
     def to_frame(self, fold_last_axis_name=False, dropna=None):
         r"""
@@ -1188,7 +1147,7 @@ class Array(ABCArray):
             if fold_last_axis_name:
                 tmp = axes_names[-1] if axes_names[-1] is not None else ''
                 if self.axes[-1].name:
-                    axes_names[-1] = "{}\\{}".format(tmp, self.axes[-1].name)
+                    axes_names[-1] = f"{tmp}\\{self.axes[-1].name}"
             if self.ndim == 2:
                 index = pd.Index(data=self.axes[0].labels, name=axes_names[0])
             else:
@@ -1321,10 +1280,11 @@ class Array(ABCArray):
         # retrieve kw-only arguments
         percentiles = kwargs.pop('percentiles', None)
         if kwargs:
-            raise TypeError("describe() got an unexpected keyword argument '{}'".format(list(kwargs.keys())[0]))
+            first_kwarg = list(kwargs.keys())[0]
+            raise TypeError(f"describe() got an unexpected keyword argument '{first_kwarg}'")
         if percentiles is None:
             percentiles = [25, 50, 75]
-        plabels = ['{}%'.format(p) for p in percentiles]
+        plabels = [f'{p}%' for p in percentiles]
         labels = ['count', 'mean', 'std', 'min'] + plabels + ['max']
         percentiles = [0] + list(percentiles) + [100]
         # TODO: we should use the commented code using  *self.percentile(percentiles, *args) but this does not work
@@ -1382,7 +1342,8 @@ class Array(ABCArray):
         # retrieve kw-only arguments
         percentiles = kwargs.pop('percentiles', None)
         if kwargs:
-            raise TypeError("describe() got an unexpected keyword argument '{}'".format(list(kwargs.keys())[0]))
+            first_kwarg = list(kwargs.keys())[0]
+            raise TypeError(f"describe_by() got an unexpected keyword argument '{first_kwarg}'")
         args = self._prepare_aggregate(None, args)
         args = self._by_args_to_normal_agg_args(args)
         return self.describe(*args, percentiles=percentiles)
@@ -1411,8 +1372,6 @@ class Array(ABCArray):
 
     def __bool__(self):
         return bool(self.data)
-    # Python 2
-    __nonzero__ = __bool__
 
     # TODO: either support a list (of axes names) as first argument here (and set_labels)
     #       or don't support that in set_axes
@@ -1591,7 +1550,7 @@ class Array(ABCArray):
         a1   c0   2   1
         """
         # XXX: can't we move this to AxisCollection.replace?
-        if isinstance(axes_to_reindex, basestring) and '=' in axes_to_reindex:
+        if isinstance(axes_to_reindex, str) and '=' in axes_to_reindex:
             axes_to_reindex = Axis(axes_to_reindex)
         if isinstance(axes_to_reindex, (Group, Axis)) and not isinstance(axes_to_reindex, AxisReference):
             new_axis = axes_to_reindex if isinstance(axes_to_reindex, Axis) else Axis(axes_to_reindex)
@@ -1810,7 +1769,7 @@ class Array(ABCArray):
         try:
             left_axes, right_axes = self.axes.align(other.axes, join=join, axes=axes)
         except ValueError as e:
-            raise ValueError("Both arrays are not aligned because {}".format(e))
+            raise ValueError(f"Both arrays are not aligned because {e}")
         return self.reindex(left_axes, fill_value=fill_value), other.reindex(right_axes, fill_value=fill_value)
 
     @deprecate_kwarg('reverse', 'ascending', {True: False, False: True})
@@ -1999,132 +1958,9 @@ class Array(ABCArray):
 
     sort_axis = renamed_to(sort_axes, 'sort_axis')
 
-    def _translate_axis_key_chunk(self, axis_key):
-        """
-        Translates axis(es) key into axis(es) position(s).
-
-        Parameters
-        ----------
-        axis_key : any kind of key
-            Key to select axis(es).
-
-        Returns
-        -------
-        IGroup
-            Positional group with valid axes (from self.axes)
-        """
-        axis_key = remove_nested_groups(axis_key)
-
-        if isinstance(axis_key, Group) and axis_key.axis is not None:
-            # retarget to real axis, if needed
-            # only retarget IGroup and not LGroup to give the opportunity for axis.translate to try the "ticks"
-            # version of the group ONLY if key.axis is not real_axis (for performance reasons)
-            if isinstance(axis_key, IGroup):
-                if axis_key.axis in self.axes:
-                    axis_key = axis_key.retarget_to(self.axes[axis_key.axis])
-                else:
-                    # axis associated with axis_key may not belong to self.
-                    # In that case, we translate IGroup to labels and search for a compatible axis
-                    # (see end of this method)
-                    axis_key = axis_key.to_label()
-
-        # already positional
-        if isinstance(axis_key, IGroup):
-            if axis_key.axis is None:
-                raise ValueError("positional groups without axis are not supported")
-            return axis_key
-
-        # labels but known axis
-        if isinstance(axis_key, LGroup) and axis_key.axis is not None:
-            try:
-                real_axis = self.axes[axis_key.axis]
-                try:
-                    axis_pos_key = real_axis.index(axis_key)
-                except KeyError:
-                    raise ValueError("%r is not a valid label for any axis" % axis_key)
-                return real_axis.i[axis_pos_key]
-            except KeyError:
-                # axis associated with axis_key may not belong to self.
-                # In that case, we translate LGroup to labels and search for a compatible axis
-                # (see end of this method)
-                axis_key = axis_key.to_label()
-
-        # otherwise we need to guess the axis
-        # TODO: instead of checking all axes, we should have a big mapping
-        # (in AxisCollection or Array):
-        # label -> (axis, index)
-        # but for Pandas, this wouldn't work, we'd need label -> axis
-        valid_axes = []
-        # TODO: use axis_key dtype to only check compatible axes
-        for axis in self.axes:
-            try:
-                axis_pos_key = axis.index(axis_key)
-                valid_axes.append(axis)
-            except KeyError:
-                continue
-        if not valid_axes:
-            raise ValueError("%s is not a valid label for any axis" % axis_key)
-        elif len(valid_axes) > 1:
-            # TODO: make an AxisCollection.display_name(axis) method out of this
-            # valid_axes = ', '.join(self.axes.display_name(axis) for a in valid_axes)
-            valid_axes = ', '.join(a.name if a.name is not None else '{{{}}}'.format(self.axes.index(a))
-                                   for a in valid_axes)
-            raise ValueError('%s is ambiguous (valid in %s)' % (axis_key, valid_axes))
-        return valid_axes[0].i[axis_pos_key]
-
-    def _translate_axis_key(self, axis_key):
-        """Same as chunk.
-
-        Returns
-        -------
-        IGroup
-            Positional group with valid axes (from self.axes)
-        """
-        if isinstance(axis_key, ExprNode):
-            axis_key = axis_key.evaluate(self.axes)
-
-        # translate Axis keys to LGroup keys
-        # FIXME: this should be simply:
-        # if isinstance(axis_key, Axis):
-        #     axis_key = axis_key[:]
-        # but it does not work for some reason (the retarget does not seem to happen)
-        if isinstance(axis_key, Axis):
-            real_axis = self.axes[axis_key]
-            if isinstance(axis_key, AxisReference) or axis_key.equals(real_axis):
-                axis_key = real_axis[:]
-            else:
-                axis_key = axis_key.labels
-
-        # TODO: do it for Group without axis too
-        if isinstance(axis_key, (tuple, list, np.ndarray, Array)):
-            axis = None
-            # TODO: I should actually do some benchmarks to see if this is useful, and estimate which numbers to use
-            # FIXME: check that size is < than key size
-            for size in (1, 10, 100, 1000):
-                # TODO: do not recheck already checked elements
-                key_chunk = axis_key.i[:size] if isinstance(axis_key, Array) else axis_key[:size]
-                try:
-                    tkey = self._translate_axis_key_chunk(key_chunk)
-                    axis = tkey.axis
-                    break
-                except ValueError:
-                    continue
-            # the (start of the) key match a single axis
-            if axis is not None:
-                # make sure we have an Axis object
-                # TODO: we should make sure the tkey returned from _translate_axis_key_chunk always contains a
-                # real Axis (and thus kill this line)
-                axis = self.axes[axis]
-                # wrap key in LGroup
-                axis_key = axis[axis_key]
-                # XXX: reuse tkey chunks and only translate the rest?
-            return self._translate_axis_key_chunk(axis_key)
-        else:
-            return self._translate_axis_key_chunk(axis_key)
-
-    def __getitem__(self, key, collapse_slices=False, translate_key=True):
-        raw_broadcasted_key, res_axes, transpose_indices = self.axes._key_to_raw_and_axes(key, collapse_slices,
-                                                                                          translate_key)
+    def __getitem__(self, key, collapse_slices=False, translate_key=True, points=False):
+        raw_broadcasted_key, res_axes, transpose_indices = \
+            self.axes._key_to_raw_and_axes(key, collapse_slices, translate_key, points, wildcard=False)
         res_data = self.data[raw_broadcasted_key]
         if res_axes:
             res = Array(res_data, res_axes)
@@ -2134,12 +1970,13 @@ class Array(ABCArray):
         else:
             return res_data
 
-    def __setitem__(self, key, value, collapse_slices=True, translate_key=True):
+    def __setitem__(self, key, value, collapse_slices=True, translate_key=True, points=False):
         # TODO: if key or value has more axes than self, we could use
         # total_axes = self.axes + key.axes + value.axes
         # expanded = self.expand(total_axes)
         # data = np.asarray(expanded.data)
-        raw_broadcasted_key, target_axes, _ = self.axes._key_to_raw_and_axes(key, collapse_slices, translate_key)
+        raw_broadcasted_key, target_axes, _ = \
+            self.axes._key_to_raw_and_axes(key, collapse_slices, translate_key, points, wildcard=True)
         if isinstance(value, Array):
             # TODO: the check_compatible should be included in broadcast_with
             value = value.broadcast_with(target_axes)
@@ -2152,8 +1989,8 @@ class Array(ABCArray):
                 extra_axes = AxisCollection(extra_axes)
                 axes = AxisCollection(target_axes)
                 text = 'axes are' if len(extra_axes) > 1 else 'axis is'
-                raise ValueError("Value {!s} {} not present in target subset {!s}. A value can only have the same axes "
-                                 "or fewer axes than the subset being targeted".format(extra_axes, text, axes))
+                raise ValueError(f"Value {extra_axes!s} {text} not present in target subset {axes!s}. A value can only "
+                                 f"have the same axes or fewer axes than the subset being targeted")
         self.data[raw_broadcasted_key] = value
 
         # concerning keys this can make sense in several cases:
@@ -2716,7 +2553,7 @@ class Array(ABCArray):
             #      will return given the input we are going to give it. My first search for this found nothing. One
             #      way to do this would be to create one big mapping: {(op, input dtype): res dtype}
             res_dtype = float if op in _always_return_float else res.dtype
-            if op in (np.sum, np.nansum) and res.dtype in (np.bool, np.bool_):
+            if op in (np.sum, np.nansum) and res.dtype in (bool, np.bool_):
                 res_dtype = int
             res_data = np.empty(res_shape, dtype=res_dtype)
 
@@ -2786,9 +2623,9 @@ class Array(ABCArray):
             kwargs_items = kwargs.items()
         if not commutative and len(kwargs_items) > 1:
             # TODO: lift this restriction for python3.6+
-            raise ValueError("grouping aggregates on multiple axes at the same time using keyword arguments is not "
-                             "supported for '%s' (because it is not a commutative operation and keyword arguments are "
-                             "*not* ordered in Python)" % op.__name__)
+            raise ValueError(f"grouping aggregates on multiple axes at the same time using keyword arguments is not "
+                             f"supported for '{op.__name__}' (because it is not a commutative operation and keyword "
+                             f"arguments are *not* ordered in Python)")
 
         # Sort kwargs by axis name so that we have consistent results between runs because otherwise rounding errors
         # could lead to slightly different results even for commutative operations.
@@ -2818,13 +2655,13 @@ class Array(ABCArray):
                 groups = tuple(self.axes._guess_axis(_to_key(k, stack_depth + 1)) for k in key)
                 axis = groups[0].axis
                 if not all(g.axis.equals(axis) for g in groups[1:]):
-                    raise ValueError("group with different axes: %s" % str(key))
+                    raise ValueError(f"group with different axes: {key}")
                 return groups
-            if isinstance(key, (Group, int, basestring, list, slice)):
+            if isinstance(key, (Group, int, str, list, slice)):
                 return self.axes._guess_axis(key)
             else:
-                raise NotImplementedError("%s has invalid type (%s) for a group aggregate key"
-                                          % (key, type(key).__name__))
+                key_type = type(key).__name__
+                raise NotImplementedError(f"{key} has invalid type ({key_type}) for a group aggregate key")
 
         def standardise_arg(arg, stack_depth=1):
             if self.axes.isaxis(arg):
@@ -2855,7 +2692,9 @@ class Array(ABCArray):
     def _aggregate(self, op, args, kwargs=None, keepaxes=False, by_agg=False, commutative=False,
                    out=None, extra_kwargs={}):
         operations = self._prepare_aggregate(op, args, kwargs, commutative, stack_depth=3)
-        if by_agg and operations != self.axes:
+
+        total_len_args = len(args) + len(kwargs) if kwargs is not None else 0
+        if by_agg and total_len_args:
             operations = self._by_args_to_normal_agg_args(operations)
 
         res = self
@@ -3590,7 +3429,7 @@ class Array(ABCArray):
             for labels, value in self.items(axes):
                 hashable_value = value.data.tobytes() if isinstance(value, Array) else value
                 if hashable_value not in seen:
-                    list_append((sep_join(str(l) for l in labels), value))
+                    list_append((sep_join(str(label) for label in labels), value))
                     seen_add(hashable_value)
             res_arr = stack(unq_list, axis_name)
             # transpose the combined axis at the position where the first of the combined axes was
@@ -3632,8 +3471,8 @@ class Array(ABCArray):
         """
         str_info = ''
         if len(self.meta):
-            str_info += '{}\n'.format(self.meta)
-        str_info += '{}\ndtype: {}\nmemory used: {}'.format(self.axes.info, self.dtype.name, self.memory_used)
+            str_info += f'{self.meta}\n'
+        str_info += f'{self.axes.info}\ndtype: {self.dtype.name}\nmemory used: {self.memory_used}'
         return ReprString(str_info)
 
     def ratio(self, *axes):
@@ -3728,6 +3567,8 @@ class Array(ABCArray):
         return self / self.sum(*axes)
 
     def rationot0(self, *axes):
+        # part of the doctest is skipped because it produces a warning we do not want to have to handle within the
+        # doctest and cannot properly ignore
         r"""Returns an Array with values array / array.sum(axes) where the sum is not 0, 0 otherwise.
 
         Parameters
@@ -3762,7 +3603,7 @@ class Array(ABCArray):
 
         for reference, the normal ratio method would produce a warning message and return:
 
-        >>> arr.ratio('a')
+        >>> arr.ratio('a')                                          # doctest: +SKIP
         a\b   b0   b1   b2
          a0  0.6  nan  0.2
          a1  0.4  nan  0.8
@@ -3815,7 +3656,7 @@ class Array(ABCArray):
                 if skipna is None:
                     skipna = nanfunc is not None
                 if skipna and nanfunc is None:
-                    raise ValueError("skipna is not available for {}".format(func.__name__))
+                    raise ValueError(f"skipna is not available for {func.__name__}")
                 _npfunc = nanfunc if skipna else npfunc
                 _extra_kwargs = {}
                 for k in extra_kwargs:
@@ -5476,7 +5317,7 @@ class Array(ABCArray):
 
     # element-wise method factory
     def _binop(opname):
-        fullname = '__%s__' % opname
+        fullname = f'__{opname}__'
         super_method = getattr(np.ndarray, fullname)
 
         def opmethod(self, other):
@@ -5597,7 +5438,7 @@ class Array(ABCArray):
         current = self[:]
         axes = self.axes
         if not isinstance(other, (Array, np.ndarray)):
-            raise NotImplementedError("matrix multiplication not implemented for %s" % type(other))
+            raise NotImplementedError(f"matrix multiplication not implemented for {type(other)}")
         if isinstance(other, np.ndarray):
             other = Array(other)
         other_axes = other.axes
@@ -5632,12 +5473,12 @@ class Array(ABCArray):
         if isinstance(other, np.ndarray):
             other = Array(other)
         if not isinstance(other, Array):
-            raise NotImplementedError("matrix multiplication not implemented for %s" % type(other))
+            raise NotImplementedError(f"matrix multiplication not implemented for {type(other)}")
         return other.__matmul__(self)
 
     # element-wise method factory
     def _unaryop(opname):
-        fullname = '__%s__' % opname
+        fullname = f'__{opname}__'
         super_method = getattr(np.ndarray, fullname)
 
         def opmethod(self):
@@ -5694,7 +5535,7 @@ class Array(ABCArray):
 
         See Also
         --------
-        Array.eq
+        Array.eq, Array.allclose
 
         Notes
         -----
@@ -5796,6 +5637,79 @@ class Array(ABCArray):
         except ValueError:
             return False
 
+    def allclose(self, other: Any, rtol: float = 1e-05, atol: float = 1e-08, nans_equal: bool = True,
+                 check_axes: bool = False) -> bool:
+        """
+        Compares self with another array and returns True if they are element-wise equal within a tolerance.
+
+        The tolerance values are positive, typically very small numbers.
+        The relative difference (rtol * abs(other)) and the absolute difference atol are added together to compare
+        against the absolute difference between self and other.
+
+        NaN values are treated as equal if they are in the same place and if `nans_equal=True`.
+
+        Parameters
+        ----------
+        other : Array-like
+            Input array. asarray() is used on a non-Array input.
+        rtol : float or int, optional
+            The relative tolerance parameter (see Notes). Defaults to 1e-05.
+        atol : float or int, optional
+            The absolute tolerance parameter (see Notes). Defaults to 1e-08.
+        nans_equal : boolean, optional
+            Whether or not to consider NaN values at the same positions in the two arrays as equal.
+            By default, an array containing NaN values is never equal to another array, even if that other array
+            also contains NaN values at the same positions. The reason is that a NaN value is different from
+            *anything*, including itself. Defaults to True.
+        check_axes : boolean, optional
+            Whether or not to check that the set of axes and their order is the same on both sides. Defaults to False.
+            If False, two arrays with compatible axes (and the same data) will compare equal, even if some axis is
+            missing on either side or if the axes are in a different order.
+
+        Returns
+        -------
+        bool
+            Returns True if the two arrays are equal within the given tolerance; False otherwise.
+
+        See Also
+        --------
+        Array.equals
+
+        Notes
+        -----
+        If the following equation is element-wise True, then `allclose` returns True.
+
+            absolute(array1 - array2) <= (atol + rtol * absolute(array2))
+
+        The above equation is not symmetric in array1 and array2, so that array1.allclose(array2) might be different
+        from array2.allclose(array1) in some rare cases.
+
+        Examples
+        --------
+        >>> arr1 = Array([1e10, 1e-7], "a=a0,a1")
+        >>> arr2 = Array([1.00001e10, 1e-8], "a=a0,a1")
+        >>> arr1.allclose(arr2)
+        False
+
+        >>> arr1 = Array([1e10, 1e-8], "a=a0,a1")
+        >>> arr2 = Array([1.00001e10, 1e-9], "a=a0,a1")
+        >>> arr1.allclose(arr2)
+        True
+
+        >>> arr1 = Array([1e10, 1e-8], "a=a0,a1")
+        >>> arr2 = Array([1.0001e10, 1e-9], "a=a0,a1")
+        >>> arr1.allclose(arr2)
+        False
+
+        >>> arr1 = Array([1.0, nan], "a=a0,a1")
+        >>> arr2 = Array([1.0, nan], "a=a0,a1")
+        >>> arr1.allclose(arr2)
+        True
+        >>> arr1.allclose(arr2, nans_equal=False)
+        False
+        """
+        return self.equals(other=other, rtol=rtol, atol=atol, nans_equal=nans_equal, check_axes=check_axes)
+
     @deprecate_kwarg('nan_equals', 'nans_equal')
     def eq(self, other, rtol=0, atol=0, nans_equal=False):
         """
@@ -5824,7 +5738,7 @@ class Array(ABCArray):
 
         See Also
         --------
-        Array.equals
+        Array.equals, Array.isclose
 
         Notes
         -----
@@ -5929,6 +5843,8 @@ class Array(ABCArray):
         return Array(np.isin(self.data, test_values, assume_unique=assume_unique, invert=invert), self.axes)
 
     def divnot0(self, other):
+        # part of the doctest is skipped because it produces a warning we do not want to have to handle within the
+        # doctest and cannot properly ignore
         r"""Divides array by other, but returns 0.0 where other is 0.
 
         Parameters
@@ -5954,14 +5870,17 @@ class Array(ABCArray):
         >>> b
         sex  M  F
              0  1
-        >>> a / b
-        nat\sex    M    F
-             BE  nan  1.0
-             FO  inf  3.0
         >>> a.divnot0(b)
         nat\sex    M    F
              BE  0.0  1.0
              FO  0.0  3.0
+
+        Compare this to:
+
+        >>> a / b                                  # doctest: +SKIP
+        nat\sex    M    F
+             BE  nan  1.0
+             FO  inf  3.0
         """
         if np.isscalar(other):
             if other == 0:
@@ -6391,11 +6310,11 @@ class Array(ABCArray):
             before = IGroup(pos, axis=axis)
 
         if before is not None:
-            before = self._translate_axis_key(before)
+            before = self.axes._translate_axis_key(before)
             axis = before.axis
             before_pos = axis.index(before)
         else:
-            after = self._translate_axis_key(after)
+            after = self.axes._translate_axis_key(after)
             axis = after.axis
             before_pos = axis.index(after) + 1
 
@@ -6501,7 +6420,7 @@ class Array(ABCArray):
         label0       0       1       2
         label2       6       7       8
         """
-        group = self._translate_axis_key(labels)
+        group = self.axes._translate_axis_key(labels)
         axis = group.axis
         indices = axis.index(group)
         axis_idx = self.axes.index(axis)
@@ -6780,16 +6699,16 @@ class Array(ABCArray):
 
         Examples
         --------
-        >>> axes = [Axis(3, 'row'), Axis('column=country,sex')]    # doctest: +SKIP
+        >>> axes = [Axis(3, 'row'), Axis('column=country,sex')]
         >>> arr = Array([['BE', 'F'],
         ...               ['FR', 'M'],
-        ...               ['FR', 'F']], axes=axes)                 # doctest: +SKIP
-        >>> arr                                                    # doctest: +SKIP
-        row*\column  age  sex
-                  0    5    F
-                  1   25    M
-                  2   30    F
-        >>> arr.to_stata('test.dta')                               # doctest: +SKIP
+        ...               ['FR', 'F']], axes=axes)
+        >>> arr
+        row*\column  country  sex
+                  0       BE    F
+                  1       FR    M
+                  2       FR    F
+        >>> arr.to_stata('test.dta')
         """
         self.to_frame().to_stata(filepath_or_buffer, **kwargs)
 
@@ -7744,10 +7663,10 @@ class Array(ABCArray):
         # * somehow factorize this code with AxisCollection.split_axes
         if axes is None:
             axes = {axis: None for axis in array.axes if axis.name is not None and sep in axis.name}
-        elif isinstance(axes, (int, basestring, Axis)):
+        elif isinstance(axes, (int, str, Axis)):
             axes = {axes: names}
         elif isinstance(axes, (list, tuple)):
-            if all(isinstance(axis, (int, basestring, Axis)) for axis in axes):
+            if all(isinstance(axis, (int, str, Axis)) for axis in axes):
                 axes = {axis: None for axis in axes}
             else:
                 raise ValueError("Expected tuple or list of int, string or Axis instances")
@@ -8140,8 +8059,8 @@ def _check_axes_argument(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         if len(args) > 1 and isinstance(args[1], (int, Axis)):
-            raise ValueError("If you want to pass several axes or dimension lengths to {}, you must pass them as a "
-                             "list (using []) or tuple (using()).".format(func.__name__))
+            raise ValueError(f"If you want to pass several axes or dimension lengths to {func.__name__}, you must pass "
+                             f"them as a list (using []) or tuple (using()).")
         return func(*args, **kwargs)
     return wrapper
 
@@ -8712,6 +8631,7 @@ def sequence(axis, initial=0, inc=None, mult=None, func=None, axes=None, title=N
             res[axis.i[1:]] = ((1 - cum_mult) / (1 - mult)) * inc + initial * cum_mult
     return res
 
+
 create_sequential = renamed_to(sequence, 'create_sequential')
 
 
@@ -8799,7 +8719,7 @@ def ndtest(shape_or_axes, start=0, label_start=0, title=None, dtype=int, meta=No
         assert len(shape_or_axes) <= 26
         axes_names = [chr(ord('a') + i) for i in range(len(shape_or_axes))]
         label_ranges = [range(label_start, label_start + length) for length in shape_or_axes]
-        shape_or_axes = [Axis(['{}{}'.format(name, i) for i in label_range], name)
+        shape_or_axes = [Axis([f'{name}{i}' for i in label_range], name)
                          for name, label_range in zip(axes_names, label_ranges)]
     if isinstance(shape_or_axes, AxisCollection):
         axes = shape_or_axes
@@ -9288,12 +9208,12 @@ def stack(elements=None, axes=None, title=None, meta=None, dtype=None, res_axes=
     if elements is not None and kwargs:
         raise TypeError("stack() accepts either keyword arguments OR a collection of elements, not both")
 
-    if isinstance(axes, basestring) and '=' in axes:
+    if isinstance(axes, str) and '=' in axes:
         axes = Axis(axes)
     elif isinstance(axes, Group):
         axes = Axis(axes)
 
-    if axes is not None and not isinstance(axes, basestring):
+    if axes is not None and not isinstance(axes, str):
         axes = AxisCollection(axes)
 
     if kwargs:
@@ -9321,7 +9241,7 @@ def stack(elements=None, axes=None, title=None, meta=None, dtype=None, res_axes=
 
         if all(isinstance(e, tuple) for e in elements):
             assert all(len(e) == 2 for e in elements)
-            if axes is None or isinstance(axes, basestring):
+            if axes is None or isinstance(axes, str):
                 keys = [k for k, v in elements]
                 values = [v for k, v in elements]
                 # assert that all keys are indexers
@@ -9338,14 +9258,15 @@ def stack(elements=None, axes=None, title=None, meta=None, dtype=None, res_axes=
                 dict_elements = {translate_and_sort_key(key, axes): value for key, value in elements}
                 items = [(k, dict_elements[k]) for k in axes.iter_labels()]
         else:
-            if axes is None or isinstance(axes, basestring):
+            if axes is None or isinstance(axes, str):
                 axes = AxisCollection(Axis(len(elements), axes))
             else:
                 # TODO: add support for more than one axis here
                 assert axes.ndim == 1 and len(axes[0]) == len(elements)
             items = list(zip(axes[0], elements))
     else:
-        raise TypeError('unsupported type for arrays: %s' % type(elements).__name__)
+        elements_type = type(elements).__name__
+        raise TypeError(f'unsupported type for arrays: {elements_type}')
 
     if any(isinstance(v, Session) for k, v in items):
         if not all(isinstance(v, Session) for k, v in items):
@@ -9467,8 +9388,8 @@ def raw_broadcastable(values, min_axes=None):
     same as make_numpy_broadcastable but returns numpy arrays
     """
     arrays, res_axes = make_numpy_broadcastable(values, min_axes=min_axes)
-    raw = [a.data if isinstance(a, Array) else a
-           for a in arrays]
+    raw = tuple(a.data if isinstance(a, Array) else a
+                for a in arrays)
     return raw, res_axes
 
 
@@ -9568,7 +9489,7 @@ def zip_array_values(values, axes=None, ascending=True):
         if not isinstance(axes, (tuple, list, AxisCollection)):
             axes = (axes,)
         # transform string axes definitions to objects
-        axes = [Axis(axis) if isinstance(axis, basestring) and '=' in axis else axis
+        axes = [Axis(axis) if isinstance(axis, str) and '=' in axis else axis
                 for axis in axes]
         # transform string axes references to objects
         axes = AxisCollection([axis if isinstance(axis, Axis) else all_axes[axis]

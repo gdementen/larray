@@ -1,6 +1,4 @@
-from __future__ import absolute_import, division, print_function
-
-__version__ = '0.32.1-dev'
+__version__ = '0.33-dev'
 
 
 from larray.core.axis import Axis, AxisCollection, X
@@ -21,6 +19,7 @@ from larray.core.npufuncs import (sin, cos, tan, arcsin, arccos, arctan, hypot, 
                                   i0, sinc, signbit, copysign, frexp, ldexp,
                                   convolve, clip, sqrt, absolute, fabs, sign, fmax, fmin, nan_to_num,
                                   real_if_close, interp, isnan, isinf, inverse)
+from larray.core.misc import isscalar
 
 from larray.inout.misc import from_lists, from_string
 from larray.inout.pandas import from_frame, from_series
@@ -74,6 +73,8 @@ __all__ = [
     'i0', 'sinc', 'signbit', 'copysign', 'frexp', 'ldexp',
     'convolve', 'clip', 'sqrt', 'absolute', 'fabs', 'sign', 'fmax', 'fmin', 'nan_to_num',
     'real_if_close', 'interp', 'isnan', 'isinf', 'inverse',
+    # core/misc
+    'isscalar',
     # inout
     'from_lists', 'from_string', 'from_frame', 'from_series', 'read_csv', 'read_tsv',
     'read_eurostat', 'read_excel', 'read_hdf', 'read_sas', 'read_stata',

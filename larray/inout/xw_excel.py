@@ -1,6 +1,3 @@
-# -*- coding: utf8 -*-
-from __future__ import absolute_import, print_function
-
 import os
 import atexit
 
@@ -10,14 +7,13 @@ try:
 except ImportError:
     xw = None
 
-from larray.core.array import Array, ndtest
+from larray.core.array import Array, ndtest             # noqa: F401
 from larray.core.axis import Axis
 from larray.core.constants import nan
 from larray.core.group import _translate_sheet_name
 from larray.inout.pandas import df_asarray
 from larray.inout.misc import from_lists
 from larray.util.misc import deprecate_kwarg
-from larray.util.compat import PY2
 
 
 string_types = (str,)
@@ -44,7 +40,7 @@ if xw is not None:
         if global_app is not None:
             if is_app_alive(global_app):
                 try:
-                    global_app.kill()
+                    global_app.quit()
                 except Exception:
                     pass
             del global_app
@@ -96,10 +92,10 @@ if xw is not None:
                     # XXX: we might want to be more precise than .xl* because I am unsure writing .xls
                     #     (or anything other than .xlsx and .xlsm) would work
                     if not ext.startswith('.xl'):
-                        raise ValueError("'%s' is not a supported file extension" % ext)
+                        raise ValueError(f"'{ext}' is not a supported file extension")
                     if not os.path.isfile(filepath) and not overwrite_file:
-                        raise ValueError("File {} does not exist. Please give the path to an existing file or set "
-                                         "overwrite_file argument to True".format(filepath))
+                        raise ValueError(f"File {filepath} does not exist. Please give the path to an existing file "
+                                         f"or set overwrite_file argument to True")
                     if os.path.isfile(filepath) and overwrite_file:
                         self.filepath = filepath
                         # we create a temporary file to work on. In case of crash, the original is not destroyed.
@@ -220,7 +216,7 @@ if xw is not None:
             if key in self:
                 return Sheet(self, key)
             else:
-                raise KeyError('Workbook has no sheet named {}'.format(key))
+                raise KeyError(f'Workbook has no sheet named {key}')
 
         def __setitem__(self, key, value):
             key = _translate_sheet_name(key)
@@ -324,7 +320,7 @@ if xw is not None:
 
         def __repr__(self):
             cls = self.__class__
-            return '<{}.{} [{}]>'.format(cls.__module__, cls.__name__, self.name)
+            return f'<{cls.__module__}.{cls.__name__} [{self.name}]>'
 
 
     def _fill_slice(s, length):
@@ -517,7 +513,7 @@ if xw is not None:
         def __repr__(self):
             cls = self.__class__
             xw_sheet = self.xw_sheet
-            return '<{}.{} [{}]{}>'.format(cls.__module__, cls.__name__, xw_sheet.book.name, xw_sheet.name)
+            return f'<{cls.__module__}.{cls.__name__} [{xw_sheet.book.name}]{xw_sheet.name}>'
 
 
     class Range(object):
@@ -649,8 +645,7 @@ else:
 
 
 # We define Workbook and open_excel documentation here since Readthedocs runs on Linux
-if not PY2:
-    Workbook.__doc__ = r"""
+Workbook.__doc__ = r"""
 Excel Workbook.
 
 See Also
@@ -658,7 +653,7 @@ See Also
 open_excel
 """
 
-    Workbook.sheet_names.__doc__ = r"""
+Workbook.sheet_names.__doc__ = r"""
 Returns the names of the Excel sheets.
 
 Examples
@@ -674,7 +669,7 @@ Examples
 ['arr', 'arr2', 'arr3']
 """
 
-    Workbook.save.__doc__ = r"""
+Workbook.save.__doc__ = r"""
 Saves the Workbook.
 
 If a path is being provided, this works like SaveAs() in Excel.
@@ -697,7 +692,7 @@ Examples
 ...     wb.save()
 """
 
-    Workbook.close.__doc__ = r"""
+Workbook.close.__doc__ = r"""
 Close the workbook in Excel.
 
 Need to be called if the workbook has been opened without the `with` statement.
@@ -713,7 +708,7 @@ Examples
 >>> wb.close()                                                    # doctest: +SKIP
 """
 
-    Workbook.app.__doc__ = r"""
+Workbook.app.__doc__ = r"""
 Return the Excel instance this workbook is attached to.
 """
 

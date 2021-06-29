@@ -49,6 +49,8 @@ Searching
    Axis.startingwith
    Axis.endingwith
    Axis.matching
+   Axis.min
+   Axis.max
 
 Modifying/Selecting
 -------------------
@@ -71,6 +73,7 @@ Modifying/Selecting
    Axis.align
    Axis.split
    Axis.ignore_labels
+   Axis.astype
 
 Testing
 -------
@@ -413,6 +416,7 @@ Testing/Searching
    :toctree: _generated/
 
    Array.equals
+   Array.allclose
    Array.eq
    Array.isin
    Array.nonzero
@@ -516,6 +520,7 @@ Miscellaneous
    convolve
    absolute
    fabs
+   isscalar
    isnan
    isinf
    nan_to_num

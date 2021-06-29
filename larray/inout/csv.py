@@ -1,10 +1,7 @@
-from __future__ import absolute_import, print_function
-
 import os
 import csv
 import warnings
 from glob import glob
-from collections import OrderedDict
 
 import pandas as pd
 import numpy as np
@@ -13,11 +10,10 @@ from larray.core.array import Array, asarray
 from larray.core.constants import nan
 from larray.core.metadata import Metadata
 from larray.util.misc import skip_comment_cells, strip_rows, deprecate_kwarg
-from larray.util.compat import csv_open
 from larray.inout.session import register_file_handler
 from larray.inout.common import _get_index_col, FileHandler
 from larray.inout.pandas import df_asarray
-from larray.example import get_example_filepath
+from larray.example import get_example_filepath         # noqa: F401
 
 
 @deprecate_kwarg('nb_index', 'nb_axes', arg_converter=lambda x: x + 1)
@@ -193,7 +189,7 @@ def read_csv(filepath_or_buffer, nb_axes=None, index_col=None, sep=',', headerse
         # read axes names. This needs to be done separately instead of reading the whole file with Pandas then
         # manipulating the dataframe because the header line must be ignored for the column types to be inferred
         # correctly. Note that to read one line, this is faster than using Pandas reader.
-        with csv_open(filepath_or_buffer) as f:
+        with open(filepath_or_buffer, mode='r', newline='', encoding='utf8') as f:
             reader = csv.reader(f, delimiter=sep)
             line_stream = skip_comment_cells(strip_rows(reader))
             axes_names = next(line_stream)
@@ -279,13 +275,13 @@ class PandasCSVHandler(FileHandler):
 
     def _to_filepath(self, key):
         if self.directory is not None:
-            return os.path.join(self.directory, '{}.csv'.format(key))
+            return os.path.join(self.directory, f'{key}.csv')
         else:
             return key
 
     def _open_for_read(self):
         if self.directory and not os.path.isdir(self.directory):
-            raise ValueError("Directory '{}' does not exist".format(self.directory))
+            raise ValueError(f"Directory '{self.directory}' does not exist")
 
     def _open_for_write(self):
         if self.directory is not None:
@@ -293,7 +289,7 @@ class PandasCSVHandler(FileHandler):
                 os.makedirs(self.directory)
             except OSError:
                 if not os.path.isdir(self.directory):
-                    raise ValueError("Path {} must represent a directory".format(self.directory))
+                    raise ValueError(f"Path {self.directory} must represent a directory")
 
     def list_items(self):
         fnames = glob(self.pattern) if self.pattern is not None else []

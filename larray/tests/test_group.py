@@ -1,6 +1,3 @@
-# -*- coding: utf8 -*-
-from __future__ import absolute_import, division, print_function
-
 import pytest
 import os.path
 import numpy as np
@@ -499,6 +496,7 @@ def test_h5_io_igroup(tmpdir):
     named_axis_not_in_file.to_hdf(fpath, axis_key=axis_key)
     named2 = read_hdf(fpath, key=named_axis_not_in_file.name)
     assert all(named_axis_not_in_file == named2)
+
 
 if __name__ == "__main__":
     pytest.main()

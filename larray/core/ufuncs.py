@@ -1,6 +1,5 @@
 # numpy ufuncs
 # http://docs.scipy.org/doc/numpy/reference/routines.math.html
-
 import numpy as np
 
 from larray.core.array import Array, make_args_broadcastable
@@ -95,10 +94,8 @@ def broadcastify(func):
     short_desc = func.__doc__[:end_short_desc]
     numpy_doc = func.__doc__[end_short_desc:]
     ident = ' ' * (len(short_desc[end_signature:]) - len(short_desc[end_signature:].lstrip()))
-    wrapper.__doc__ = '{short_desc}' \
-                      '\n\n{ident}larray specific variant of ``numpy.{fname}``.' \
-                      '\n\n{ident}Documentation from numpy:' \
-                      '{numpy_doc}'.format(short_desc=short_desc, ident=ident, fname=func.__name__, numpy_doc=numpy_doc)
+    wrapper.__doc__ = f'{short_desc}\n\n{ident}larray specific variant of ``numpy.{func.__name__}``.\n\n' \
+                      f'{ident}Documentation from numpy:{numpy_doc}'
     # set __qualname__ explicitly (all these functions are supposed to be top-level function in the ufuncs module)
     wrapper.__qualname__ = func.__name__
     # we should not copy __module__

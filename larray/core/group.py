@@ -1,6 +1,3 @@
-# -*- coding: utf8 -*-
-from __future__ import absolute_import, division, print_function
-
 import fnmatch
 import re
 import sys
@@ -11,9 +8,8 @@ import numpy as np
 import pandas as pd
 
 from larray.core.abstractbases import ABCAxis, ABCAxisReference, ABCArray
-from larray.util.oset import *
+from larray.util.oset import OrderedSet
 from larray.util.misc import (unique, find_closing_chr, _parse_bound, _seq_summary, _isintstring, renamed_to, LHDFStore)
-from larray.util.compat import basestring, PY2
 
 
 def _slice_to_str(key, repr_func=str):
@@ -36,7 +32,7 @@ def _slice_to_str(key, repr_func=str):
     start = repr_func(key.start) if key.start is not None else ''
     stop = repr_func(key.stop) if key.stop is not None else ''
     step = (":" + repr_func(key.step)) if key.step is not None else ''
-    return '%s:%s%s' % (start, stop, step)
+    return f'{start}:{stop}{step}'
 
 
 def irange(start, stop, step=None):
@@ -162,15 +158,15 @@ def generalized_range(start, stop, step=1):
             # real integers by now, and mixing negative int-like strings and letters yields some strange results.
             if start_part.isdigit():
                 if not stop_part.isdigit():
-                    raise ValueError("expected an integer for the stop bound (because the start bound is an integer) "
-                                     "but got '%s' instead" % stop_part)
+                    raise ValueError(f"expected an integer for the stop bound (because the start bound is an integer) "
+                                     f"but got '{stop_part}' instead")
                 rng = irange(int(start_part), int(stop_part))
                 start_pad = len(start_part) if start_part.startswith('0') else None
                 stop_pad = len(stop_part) if stop_part.startswith('0') else None
                 if start_pad is not None and stop_pad is not None and start_pad != stop_pad:
-                    raise ValueError("Inconsistent zero padding for start and stop ({} vs {}) of the numerical part. "
-                                     "Must be either the same on both sides or no padding on either side"
-                                     .format(start_pad, stop_pad))
+                    raise ValueError(f"Inconsistent zero padding for start and stop ({start_pad} vs {stop_pad}) of the "
+                                     f"numerical part. Must be either the same on both sides or no padding on either "
+                                     f"side")
                 elif start_pad is None and stop_pad is None:
                     r = [str(num) for num in rng]
                 else:
@@ -237,78 +233,92 @@ def _range_str_to_range(s, stack_depth=1):
     start, stop, step = groups['start'], groups['stop'], groups['step']
     start = _parse_bound(start, stack_depth + 1) if start is not None else 0
     if stop is None:
-        raise ValueError("no stop bound provided in range: %r" % s)
+        raise ValueError(f"no stop bound provided in range: {s!r}")
     stop = _parse_bound(stop, stack_depth + 1)
-    if isinstance(start, basestring) or isinstance(stop, basestring):
+    if isinstance(start, str) or isinstance(stop, str):
         start, stop = str(start), str(stop)
     # TODO: use parse_bound
     step = int(step) if step is not None else 1
     return generalized_range(start, stop, step)
 
 
-def _range_to_slice(seq, length=None):
+def _normalize_idx(idx, length):
+    if idx < - length:
+        return - length - 1
+    elif -length <= idx < 0:
+        return idx + length
+    elif 0 <= idx < length:
+        return idx
+    elif idx > length:
+        return length
+
+
+def _idx_seq_to_slice(seq, length):
     r"""
-    Returns a slice if possible (including for sequences of 1 element) otherwise returns the input sequence itself
+    Transform a sequence of indices into a slice if possible and normalize it.
+
+    If a constant step between indices of the sequence can be inferred (the sequence is something like
+    [start, start+step, start+2*step, ...]), a normalized (with has few negative indices as possible) slice is
+    returned, otherwise the sequence is returned unmodified.
 
     Parameters
     ----------
-    seq : sequence-like of int
-        List, tuple or ndarray of integers representing the range.
-        It should be something like [start, start+step, start+2*step, ...]
-    length : int, optional
-        length of sequence of positions. This is only useful when you must be able to transform decreasing sequences
-        which can stop at 0.
+    seq : sequence-like of integers
+        Sequence (list, tuple or ndarray) of indices.
+    length : int
+        Length of the sequence the indices refer to.
 
     Returns
     -------
     slice or sequence-like
-        return the input sequence if a slice cannot be defined
+        return the input sequence if a slice cannot be defined.
 
     Examples
     --------
-    >>> _range_to_slice([3, 4, 5])
+    >>> _idx_seq_to_slice([3, 4, 5], 10)
     slice(3, 6, None)
-    >>> _range_to_slice([3, 4, 6])
+    >>> _idx_seq_to_slice([3, 4, 6], 10)
     [3, 4, 6]
-    >>> _range_to_slice([3, 5, 7])
-    slice(3, 9, 2)
-    >>> _range_to_slice([-3, -2])
-    slice(-3, -1, None)
-    >>> _range_to_slice([-1, -2])
-    slice(-1, -3, -1)
-    >>> _range_to_slice([2, 1])
+    >>> _idx_seq_to_slice([3, 5, 7], 10)
+    slice(3, 8, 2)
+    >>> _idx_seq_to_slice([-3, -2], 10)
+    slice(7, 9, None)
+    >>> _idx_seq_to_slice([-1, -2], 10)
+    slice(9, 7, -1)
+    >>> _idx_seq_to_slice([2, 1], 10)
     slice(2, 0, -1)
-    >>> _range_to_slice([1, 0], 4)
-    slice(-3, -5, -1)
-    >>> _range_to_slice([1, 0])
-    [1, 0]
-    >>> _range_to_slice([1])
+    >>> _idx_seq_to_slice([1, 0], 10)
+    slice(1, -11, -1)
+    >>> _idx_seq_to_slice([1], 10)
     slice(1, 2, None)
-    >>> _range_to_slice([])
+    >>> _idx_seq_to_slice([], 10)
     []
+    >>> _idx_seq_to_slice([3, 1], 10)
+    slice(3, 0, -2)
     """
     if len(seq) < 1:
         return seq
-    start = seq[0]
+    first_idx = _normalize_idx(seq[0], length)
     if len(seq) == 1:
-        return slice(start, start + 1)
-    second = seq[1]
-    step = second - start
-    prev_value = second
-    for value in seq[2:]:
-        if value != prev_value + step:
+        return slice(first_idx, first_idx + 1)
+    second_idx = _normalize_idx(seq[1], length)
+    step = second_idx - first_idx
+    prev_idx = second_idx
+    for raw_idx in seq[2:]:
+        idx = _normalize_idx(raw_idx, length)
+        if idx != prev_idx + step:
             return seq
-        prev_value = value
-    stop = prev_value + step
-    if prev_value == 0 and step < 0:
-        if length is None:
-            return seq
-        else:
-            stop -= length
-            start -= length
+        prev_idx = idx
+    last_idx = prev_idx
+    step_sign = 1 if step > 0 else -1
+    # we stop just after last_idx instead of using a full "step" because for negative steps, it could get us a negative
+    # stop which isn't what we want
+    stop = last_idx + step_sign
+    if last_idx == 0 and step < 0:
+        stop -= length
     if step == 1:
         step = None
-    return slice(start, stop, step)
+    return slice(first_idx, stop, step)
 
 
 def _is_object_array(array):
@@ -372,7 +382,6 @@ def _to_tick(v):
         return str(v)
 
 
-# TODO: remove the conversion to list in doctests once Python 2 is dropped
 def _to_ticks(s, parse_single_int=False):
     r"""
     Makes a (list of) value(s) usable as the collection of labels for an Axis (ie hashable).
@@ -390,17 +399,17 @@ def _to_ticks(s, parse_single_int=False):
 
     Examples
     --------
-    >>> list(_to_ticks('M , F'))
+    >>> list(_to_ticks('M , F'))                # doctest: +NORMALIZE_WHITESPACE
     ['M', 'F']
-    >>> list(_to_ticks('A,C..E,F..G,Z'))
+    >>> list(_to_ticks('A,C..E,F..G,Z'))        # doctest: +NORMALIZE_WHITESPACE
     ['A', 'C', 'D', 'E', 'F', 'G', 'Z']
-    >>> list(_to_ticks('U'))
+    >>> list(_to_ticks('U'))                    # doctest: +NORMALIZE_WHITESPACE
     ['U']
-    >>> list(_to_ticks('..3'))
+    >>> list(_to_ticks('..3'))                  # doctest: +NORMALIZE_WHITESPACE
     [0, 1, 2, 3]
-    >>> list(_to_ticks('01..12'))
+    >>> list(_to_ticks('01..12'))               # doctest: +NORMALIZE_WHITESPACE
     ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12']
-    >>> list(_to_ticks('01,02,03,10,11,12'))
+    >>> list(_to_ticks('01,02,03,10,11,12'))    # doctest: +NORMALIZE_WHITESPACE
     ['01', '02', '03', '10', '11', '12']
     """
     if isinstance(s, ABCAxis):
@@ -419,18 +428,18 @@ def _to_ticks(s, parse_single_int=False):
         ticks = [_to_tick(e) for e in s]
     elif sys.version >= '3' and isinstance(s, range):
         ticks = s
-    elif isinstance(s, basestring):
+    elif isinstance(s, str):
         seq = _seq_str_to_seq(s, parse_single_int=parse_single_int)
         if isinstance(seq, slice):
             raise ValueError("using : to define axes is deprecated, please use .. instead")
-        ticks = [seq] if isinstance(seq, (basestring, int)) else seq
+        ticks = [seq] if isinstance(seq, (str, int)) else seq
     elif hasattr(s, '__array__'):
         ticks = s.__array__()
     else:
         try:
             ticks = list(s)
         except TypeError:
-            raise TypeError("ticks must be iterable (%s is not)" % type(s))
+            raise TypeError(f"ticks must be iterable ({type(s)} is not)")
     return np.asarray(ticks)
 
 
@@ -529,30 +538,28 @@ def _to_key(v, stack_depth=1, parse_single_int=False):
     0['a0']
     >>> _to_key('0.i[a0]')
     0.i['a0']
-
-    # evaluated variables do not work on Python 2, probably because the stackdepth is different
-    # >>> ext = [1, 2, 3]
-    # >>> _to_key('{ext} >> ext')
-    # LGroup([1, 2, 3]) >> 'ext'
-    # >>> answer = 42
-    # >>> _to_key('{answer}')
-    # 42
-    # >>> _to_key('{answer} >> answer')
-    # LGroup(42) >> 'answer'
-    # >>> _to_key('10:{answer} >> answer')
-    # LGroup(slice(10, 42, None)) >> 'answer'
-    # >>> _to_key('4,{answer},2 >> answer')
-    # LGroup([4, 42, 2]) >> 'answer'
-    # >>> list(_to_key('40..{answer}'))
-    # [40, 41, 42]
-    # >>> _to_key('4,40..{answer},2')
-    # [4, 40, 41, 42, 2]
-    # >>> _to_key('4,40..{answer},2 >> answer')
-    # LGroup([4, 40, 41, 42, 2]) >> 'answer'
+    >>> ext = [1, 2, 3]
+    >>> _to_key('{ext} >> ext')
+    LGroup([1, 2, 3]) >> 'ext'
+    >>> answer = 42
+    >>> _to_key('{answer}')
+    42
+    >>> _to_key('{answer} >> answer')
+    LGroup(42) >> 'answer'
+    >>> _to_key('10:{answer} >> answer')
+    LGroup(slice(10, 42, None)) >> 'answer'
+    >>> _to_key('4,{answer},2 >> answer')
+    LGroup([4, 42, 2]) >> 'answer'
+    >>> list(_to_key('40..{answer}'))
+    [40, 41, 42]
+    >>> _to_key('4,40..{answer},2')
+    [4, 40, 41, 42, 2]
+    >>> _to_key('4,40..{answer},2 >> answer')
+    LGroup([4, 40, 41, 42, 2]) >> 'answer'
     """
     if isinstance(v, tuple):
         return list(v)
-    elif isinstance(v, basestring):
+    elif isinstance(v, str):
         # axis name
         m = _axis_name_pattern.match(v)
         _, axis, positional, key = m.groups()
@@ -580,7 +587,7 @@ def _to_key(v, stack_depth=1, parse_single_int=False):
     elif v is Ellipsis or np.isscalar(v) or isinstance(v, (Group, slice, list, np.ndarray, ABCArray, OrderedSet)):
         return v
     else:
-        raise TypeError("%s has an invalid type (%s) for a key" % (v, type(v).__name__))
+        raise TypeError(f"{v} has an invalid type ({type(v).__name__}) for a key")
 
 
 def _to_keys(value, stack_depth=1):
@@ -608,12 +615,11 @@ def _to_keys(value, stack_depth=1):
     >>> _to_keys('P01;P02,P03;:')
     ('P01', ['P02', 'P03'], slice(None, None, None))
 
-    # evaluated variables do not work on Python 2, probably because the stack depth is different
-    # >>> ext = 'P03'
-    # >>> to_keys('P01,P02,{ext}')
-    # ['P01', 'P02', 'P03']
-    # >>> to_keys('P01;P02;{ext}')
-    # ('P01', 'P02', 'P03')
+    >>> ext = 'P03'
+    >>> _to_keys('P01,P02,{ext}')
+    ['P01', 'P02', 'P03']
+    >>> _to_keys('P01;P02;{ext}')
+    ('P01', 'P02', 'P03')
 
     >>> _to_keys('age[10:19] >> teens ; year.i[-1]')
     (age[10:19] >> 'teens', year.i[-1])
@@ -633,7 +639,7 @@ def _to_keys(value, stack_depth=1):
     >>> _to_keys((('P01',), ('P02',), ':'))
     (['P01'], ['P02'], slice(None, None, None))
     """
-    if isinstance(value, basestring) and ';' in value:
+    if isinstance(value, str) and ';' in value:
         value = tuple(value.split(';'))
 
     if isinstance(value, tuple):
@@ -650,7 +656,7 @@ _sheet_name_pattern = re.compile(r'[\\/?*\[\]:]')
 def _translate_sheet_name(sheet_name):
     if isinstance(sheet_name, Group):
         sheet_name = str(_to_tick(sheet_name))
-    if isinstance(sheet_name, basestring):
+    if isinstance(sheet_name, str):
         sheet_name = _sheet_name_pattern.sub('_', sheet_name)
         if len(sheet_name) > 31:
             raise ValueError("Sheet names cannot exceed 31 characters")
@@ -714,7 +720,7 @@ class IGroupMaker(object):
 
     def __getitem__(self, key):
         if isinstance(key, (int, np.integer)) and not isinstance(self.axis, ABCAxisReference) and key >= len(self.axis):
-            raise IndexError("{} is out of range for axis of length {}".format(key, len(self.axis)))
+            raise IndexError(f"{key} is out of range for axis of length {len(self.axis)}")
         return IGroup(key, None, self.axis)
 
     def __len__(self):
@@ -740,8 +746,7 @@ class Group(object):
         # we do NOT assign a name automatically when missing because that makes it impossible to know whether a name
         # was explicitly given or not
         self.name = _to_tick(name) if name is not None else name
-        assert axis is None or isinstance(axis, (basestring, int, ABCAxis)), \
-            "invalid axis '%s' (%s)" % (axis, type(axis).__name__)
+        assert axis is None or isinstance(axis, (str, int, ABCAxis)), f"invalid axis '{axis}' ({type(axis).__name__})"
 
         # we could check the key is valid but this can be slow and could be useless
         # TODO: for performance reasons, we should cache the result. This will need to be invalidated correctly
@@ -766,20 +771,22 @@ class Group(object):
 
         axis_name = self.axis.name if isinstance(self.axis, ABCAxis) else self.axis
         if axis_name is not None:
-            axis_name = 'X.{}'.format(axis_name) if isinstance(self.axis, ABCAxisReference) else axis_name
+            axis_name = f'X.{axis_name}' if isinstance(self.axis, ABCAxisReference) else axis_name
             s = self.format_string.format(axis=axis_name, key=key_repr)
         else:
             if self.axis is not None:
                 # anonymous axis
-                axis_ref = ', axis={}'.format(repr(self.axis))
+                axis_ref = f', axis={repr(self.axis)}'
             else:
                 axis_ref = ''
+
             if isinstance(key, slice):
                 key_repr = repr(key)
             elif isinstance(key, list):
-                key_repr = '[{}]'.format(key_repr)
-            s = '{}({}{})'.format(self.__class__.__name__, key_repr, axis_ref)
-        return "{} >> {}".format(s, repr(self.name)) if self.name is not None else s
+                key_repr = f'[{key_repr}]'
+
+            s = f'{self.__class__.__name__}({key_repr}{axis_ref})'
+        return f"{s} >> {repr(self.name)}" if self.name is not None else s
 
     def __str__(self):
         return str(self.eval())
@@ -836,7 +843,7 @@ class Group(object):
         """
         if self.axis is target_axis:
             return self
-        elif isinstance(self.axis, basestring) or isinstance(self.axis, ABCAxisReference):
+        elif isinstance(self.axis, str) or isinstance(self.axis, ABCAxisReference):
             axis_name = self.axis.name if isinstance(self.axis, ABCAxisReference) else self.axis
             if axis_name != target_axis.name:
                 raise ValueError('cannot retarget a Group defined without a real axis object (e.g. using '
@@ -861,14 +868,14 @@ class Group(object):
         if hasattr(value, '__len__'):
             return len(value)
         elif isinstance(value, slice):
-            start, stop, key_step = value.start, value.stop, value.step
+            start, stop = value.start, value.stop
             # not using stop - start because that does not work for string bounds
             # (and it is different for LGroup & IGroup)
             start_pos = self.translate(start)
             stop_pos = self.translate(stop)
             return stop_pos - start_pos
         else:
-            raise TypeError('len() of unsized object ({})'.format(value))
+            raise TypeError(f'len() of unsized object ({value})')
 
     def __iter__(self):
         # XXX: use translate/IGroup instead, so that it works even in the presence of duplicate labels
@@ -1010,36 +1017,19 @@ class Group(object):
             value = self.eval()
             return value[key]
         else:
-            raise TypeError("cannot take a subset of {} because it has a '{}' key".format(self.key, type(self.key)))
+            raise TypeError(f"cannot take a subset of {self.key} because it has a '{type(self.key)}' key")
 
     def _ipython_key_completions_(self):
         return list(self.eval())
 
     # method factory
     def _binop(opname):
-        op_fullname = '__%s__' % opname
+        op_fullname = f'__{opname}__'
 
         # TODO: implement this in a delayed fashion for axes references
-        if PY2:
-            # workaround the fact slice objects do not have any __binop__ methods defined on Python2 (even though
-            # the actual operations work on them).
-            def opmethod(self, other):
-                self_value = self.eval()
-                other_value = other.eval() if isinstance(other, Group) else other
-                # this can only happen when self.axis is not an Axis instance
-                if isinstance(self_value, slice):
-                    if not isinstance(other_value, slice):
-                        # FIXME: we should raise a TypeError instead for all ops except == and !=
-                        # FIXME: we should return True for !=
-                        return False
-                    # FIXME: we should raise a TypeError instead of doing this for all ops except comparison ops
-                    self_value = (self_value.start, self_value.stop, self_value.step)
-                    other_value = (other_value.start, other_value.stop, other_value.step)
-                return getattr(self_value, op_fullname)(other_value)
-        else:
-            def opmethod(self, other):
-                other_value = other.eval() if isinstance(other, Group) else other
-                return getattr(self.eval(), op_fullname)(other_value)
+        def opmethod(self, other):
+            other_value = other.eval() if isinstance(other, Group) else other
+            return getattr(self.eval(), op_fullname)(other_value)
 
         opmethod.__name__ = op_fullname
         return opmethod
@@ -1645,7 +1635,7 @@ class LSet(LGroup):
 
     # method factory
     def _binop(opname, c):
-        op_fullname = '__%s__' % opname
+        op_fullname = f'__{opname}__'
 
         # TODO: implement this in a delayed fashion for reference axes
         def opmethod(self, other):
@@ -1655,7 +1645,7 @@ class LSet(LGroup):
 
             # setting a meaningful name is hard when either one has no name
             if self.name is not None and other.name is not None:
-                name = '%s %s %s' % (self.name, c, other.name)
+                name = f'{self.name} {c} {other.name}'
             else:
                 name = None
             # TODO: implement this in a more efficient way for ndarray keys which can be large
@@ -1725,5 +1715,6 @@ class IGroup(Group):
 
     def __hash__(self):
         return hash(('IGroup', _to_tick(self.key)))
+
 
 PGroup = renamed_to(IGroup, 'PGroup')

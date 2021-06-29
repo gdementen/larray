@@ -1,5 +1,3 @@
-from __future__ import absolute_import, division, print_function
-
 import numpy as np
 import pytest
 
@@ -232,7 +230,7 @@ def test_index(col):
     assert col.index(-2) == -2
     assert col.index(-3) == -3
     with pytest.raises(ValueError):
-            col.index(3)
+        col.index(3)
 
     # objects actually in col
     assert col.index(lipro) == 0
@@ -240,7 +238,7 @@ def test_index(col):
     assert col.index(age) == 2
     assert col.index(sex2) == 1
     with pytest.raises(ValueError):
-            col.index(geo)
+        col.index(geo)
     with pytest.raises(ValueError):
         col.index(value)
 
@@ -252,7 +250,7 @@ def test_index(col):
     assert col.index(anon2) == 3
     anon3 = Axis([0, 2])
     with pytest.raises(ValueError):
-            col.index(anon3)
+        col.index(anon3)
 
 
 def test_get(col):

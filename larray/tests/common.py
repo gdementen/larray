@@ -1,7 +1,8 @@
-from __future__ import absolute_import, division, print_function
-
 import os
+import re
 import sys
+import inspect
+from contextlib import contextmanager
 
 import pytest
 import datetime as dt
@@ -16,9 +17,9 @@ try:
 except ImportError:
     tables = None
 try:
-    import xlrd
+    import openpyxl
 except ImportError:
-    xlrd = None
+    openpyxl = None
 try:
     import xlsxwriter
 except ImportError:
@@ -27,6 +28,7 @@ except ImportError:
 from larray import Array, isnan, asarray, Metadata
 
 
+SKIP_EXCEL_TESTS = False
 TESTDATADIR = os.path.dirname(__file__)
 
 
@@ -51,19 +53,19 @@ def inputpath(relpath):
 def assert_equal_factory(test_func):
     def assert_equal(a, b):
         if isinstance(a, Array) and isinstance(b, Array) and a.axes != b.axes:
-            raise AssertionError("axes differ:\n%s\n\nvs\n\n%s" % (a.axes.info, b.axes.info))
+            raise AssertionError(f"axes differ:\n{a.axes.info}\n\nvs\n\n{b.axes.info}")
         if not isinstance(a, (np.ndarray, Array)):
             a = np.asarray(a)
         if not isinstance(b, (np.ndarray, Array)):
             b = np.asarray(b)
         if a.shape != b.shape:
-            raise AssertionError("shapes differ: %s != %s" % (a.shape, b.shape))
+            raise AssertionError(f"shapes differ: {a.shape} != {b.shape}")
         equal = test_func(a, b)
         if not equal.all():
             # XXX: for some reason ndarray[bool_larray] does not work as we would like, so we cannot do b[~equal]
             #      directly. I should at least understand why this happens and fix this if possible.
             notequal = np.asarray(~equal)
-            raise AssertionError("\ngot:\n\n%s\n\nexpected:\n\n%s" % (a[notequal], b[notequal]))
+            raise AssertionError(f"\ngot:\n\n{a[notequal]}\n\nexpected:\n\n{b[notequal]}")
     return assert_equal
 
 
@@ -73,11 +75,11 @@ def assert_larray_equal_factory(test_func, convert=True, check_axes=False):
             a = asarray(a)
             b = asarray(b)
         if check_axes and a.axes != b.axes:
-            raise AssertionError("axes differ:\n%s\n\nvs\n\n%s" % (a.axes.info, b.axes.info))
+            raise AssertionError(f"axes differ:\n{a.axes.info}\n\nvs\n\n{b.axes.info}")
         equal = test_func(a, b)
         if not equal.all():
             notequal = ~equal
-            raise AssertionError("\ngot:\n\n%s\n\nexpected:\n\n%s" % (a[notequal], b[notequal]))
+            raise AssertionError(f"\ngot:\n\n{a[notequal]}\n\nexpected:\n\n{b[notequal]}")
     return assert_equal
 
 
@@ -87,11 +89,11 @@ def assert_nparray_equal_factory(test_func, convert=True, check_shape=False):
             a = np.asarray(a)
             b = np.asarray(b)
         if check_shape and a.shape != b.shape:
-            raise AssertionError("shapes differ: %s != %s" % (a.shape, b.shape))
+            raise AssertionError(f"shapes differ: {a.shape} != {b.shape}")
         equal = test_func(a, b)
         if not equal.all():
             notequal = ~equal
-            raise AssertionError("\ngot:\n\n%s\n\nexpected:\n\n%s" % (a[notequal], b[notequal]))
+            raise AssertionError(f"\ngot:\n\n{a[notequal]}\n\nexpected:\n\n{b[notequal]}")
     return assert_equal
 
 
@@ -145,11 +147,30 @@ def meta():
                      ('score', score), ('date', date)])
 
 
-needs_xlwings = pytest.mark.skipif(xw is None, reason="xlwings is required for this test")
 needs_pytables = pytest.mark.skipif(tables is None, reason="pytables is required for this test")
-needs_xlrd = pytest.mark.skipif(xlrd is None, reason="xlrd is required for this test")
-needs_xlsxwriter = pytest.mark.skipif(xlsxwriter is None, reason="xlsxwriter is required for this test")
+needs_xlwings = pytest.mark.skipif(SKIP_EXCEL_TESTS or xw is None, reason="xlwings is required for this test")
+needs_openpyxl = pytest.mark.skipif(SKIP_EXCEL_TESTS or openpyxl is None, reason="openpyxl is required for this test")
+needs_xlsxwriter = pytest.mark.skipif(SKIP_EXCEL_TESTS or xlsxwriter is None,
+                                      reason="xlsxwriter is required for this test")
 
-needs_python35 = pytest.mark.skipif(sys.version_info < (3, 5), reason="Python 3.5 is required for this test")
-needs_python36 = pytest.mark.skipif(sys.version_info < (3, 6), reason="Python 3.6 is required for this test")
 needs_python37 = pytest.mark.skipif(sys.version_info < (3, 7), reason="Python 3.7 is required for this test")
+
+
+@contextmanager
+def must_warn(warn_cls=None, msg=None, match=None, check_file=True, check_num=True):
+    if msg is not None and match is not None:
+        raise ValueError("bad test: can't use both msg and match arguments")
+    elif msg is not None:
+        match = re.escape(msg)
+
+    try:
+        with pytest.warns(warn_cls, match=match) as caught_warnings:
+            yield caught_warnings
+    finally:
+        if check_num:
+            assert len(caught_warnings) == 1
+        if check_file:
+            caller_path = inspect.stack()[2].filename
+            warning_path = caught_warnings[0].filename
+            assert warning_path == caller_path, \
+                f"{warning_path} != {caller_path}"

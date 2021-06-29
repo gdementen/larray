@@ -73,7 +73,7 @@ Once you have satisfied the requirements detailed below, simply run::
 Required Dependencies
 ---------------------
 
-- Python 2.7, 3.6 or 3.7
+- Python 3.6 or 3.7
 - `numpy <http://www.numpy.org/>`__ (1.13 or later)
 - `pandas <http://pandas.pydata.org/>`__ (0.20 or later)
 
@@ -89,8 +89,6 @@ For IO (HDF, Excel)
 - `xlwings <https://www.xlwings.org/>`__:
   recommended package to get benefit of all Excel features of LArray.
   Only available on Windows and Mac platforms.
-- `xlrd <http://www.python-excel.org/>`__:
-  for reading data and formatting information from older Excel files (ie: .xls)
 - `openpyxl <http://www.python-excel.org/>`__:
   recommended package for reading and writing
   Excel 2010 files (ie: .xlsx)
@@ -98,6 +96,10 @@ For IO (HDF, Excel)
   alternative package for writing data, formatting
   information and, in particular, charts in the
   Excel 2010 format (ie: .xlsx)
+- `xlrd <http://www.python-excel.org/>`__:
+  for reading data and formatting information from older Excel files (ie: .xls)
+- `xlwt <http://www.python-excel.org/>`__:
+   for writing data and formatting information to older Excel files (ie: .xls)
 - `larray_eurostat <https://github.com/larray-project/larray_eurostat>`__:
   provides functions to easily download EUROSTAT files as larray objects.
   Currently limited to TSV files.

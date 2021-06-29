@@ -1,12 +1,10 @@
-# -*- coding: utf-8 -*-
-from __future__ import absolute_import, division, print_function
-
 import os
 import sys
 import re
 import fnmatch
 import warnings
 from collections import OrderedDict
+from collections.abc import Iterable
 
 import numpy as np
 
@@ -14,9 +12,8 @@ from larray.core.metadata import Metadata
 from larray.core.group import Group
 from larray.core.axis import Axis
 from larray.core.constants import nan
-from larray.core.array import Array, get_axes, ndtest, zeros, zeros_like, sequence, asarray
+from larray.core.array import Array, get_axes, ndtest, zeros, zeros_like, sequence      # noqa: F401
 from larray.util.misc import float_error_handler_factory, is_interactive_interpreter, renamed_to, inverseop
-from larray.util.compat import basestring, Iterable
 from larray.inout.session import ext_default_engine, get_file_handler
 
 
@@ -46,6 +43,8 @@ class Session(object):
 
     Examples
     --------
+    >>> # scalars
+    >>> i, s = 5, 'string'
     >>> # axes
     >>> a, b = Axis("a=a0..a2"), Axis("b=b0..b2")
     >>> # groups
@@ -55,30 +54,25 @@ class Session(object):
 
     create a Session by passing a list of pairs (name, object)
 
-    >>> s = Session([('a', a), ('b', b), ('a01', a01), ('arr1', arr1), ('arr2', arr2)])
+    >>> ses = Session([('i', i), ('s', s), ('a', a), ('b', b), ('a01', a01),
+    ...                ('arr1', arr1), ('arr2', arr2)])
 
-    create a Session using keyword arguments (but you lose order on Python < 3.6)
+    create a Session using keyword arguments
 
-    >>> s = Session(a=a, b=b, a01=a01, arr1=arr1, arr2=arr2)
+    >>> ses = Session(i=i, s=s, a=a, b=b, a01=a01, arr1=arr1, arr2=arr2)
 
-    create a Session by passing a dictionary (but you lose order on Python < 3.6)
+    create a Session by passing a dictionary
 
-    >>> s = Session({'a': a, 'b': b, 'a01': a01, 'arr1': arr1, 'arr2': arr2})
+    >>> ses = Session({'i': i, 's': s, 'a': a, 'b': b, 'a01': a01, 'arr1': arr1, 'arr2': arr2})
 
     load Session from file
 
-    >>> s = Session('my_session.h5')  # doctest: +SKIP
+    >>> ses = Session('my_session.h5')  # doctest: +SKIP
 
     create a session with metadata
 
-    >>> # Python <= 3.5
-    >>> s = Session([('arr1', arr1), ('arr2', arr2)], meta=[('title', 'my title'), ('author', 'John Smith')])
-    >>> s.meta
-    title: my title
-    author: John Smith
-    >>> # Python 3.6+
-    >>> s = Session(arr1=arr1, arr2=arr2, meta=Metadata(title='my title', author='John Smith'))  # doctest: +SKIP
-    >>> s.meta
+    >>> ses = Session(arr1=arr1, arr2=arr2, meta=Metadata(title='my title', author='John Smith'))
+    >>> ses.meta
     title: my title
     author: John Smith
     """
@@ -100,6 +94,24 @@ class Session(object):
                 self.update(a0)
         else:
             self.add(*args, **kwargs)
+
+    @property
+    def meta(self):
+        r"""Returns metadata of the session.
+
+        Returns
+        -------
+        Metadata:
+            Metadata of the session.
+        """
+        return self._meta
+
+    @meta.setter
+    def meta(self, meta):
+        if not isinstance(meta, (list, dict, OrderedDict, Metadata)):
+            raise TypeError(f"Expected list of pairs or dict or OrderedDict or Metadata object "
+                            f"instead of {type(meta).__name__}")
+        object.__setattr__(self, '_meta', meta if isinstance(meta, Metadata) else Metadata(meta))
 
     # XXX: behave like a dict and return keys instead?
     def __iter__(self):
@@ -236,8 +248,8 @@ class Session(object):
             for k, v in other:
                 self[k] = v
         else:
-            raise ValueError("Expected Session, dict-like or iterable object for 'other' argument. "
-                             "Got {}.".format(type(other).__name__))
+            raise ValueError(f"Expected Session, dict-like or iterable object for 'other' argument. "
+                             f"Got {type(other).__name__}.")
         for k, v in kwargs.items():
             self[k] = v
 
@@ -309,22 +321,17 @@ class Session(object):
     def __delitem__(self, key):
         del self._objects[key]
 
-    # TODO: add a a meta property when Python 2.7 will be dropped
     def __getattr__(self, key):
-        if key == 'meta':
-            return self._meta
-        elif key in self._objects:
+        if key in self._objects:
             return self._objects[key]
         else:
-            raise AttributeError("'{}' object has no attribute '{}'".format(self.__class__.__name__, key))
+            raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{key}'")
 
-    # TODO: implement meta.setter when Python 2.7 will be dropped
     def __setattr__(self, key, value):
+        # the condition below is needed because, unlike __getattr__, __setattr__ is called before any property
+        # see https://stackoverflow.com/a/15751159
         if key == 'meta':
-            if not isinstance(value, (list, dict, OrderedDict, Metadata)):
-                raise TypeError("Expected list of pairs or dict or OrderedDict or Metadata object "
-                                "instead of {}".format(type(value).__name__))
-            object.__setattr__(self, '_meta', value if isinstance(value, Metadata) else Metadata(value))
+            super().__setattr__(key, value)
         else:
             self._objects[key] = value
 
@@ -345,8 +352,8 @@ class Session(object):
 
     def load(self, fname, names=None, engine='auto', display=False, **kwargs):
         r"""
-        Load Array objects from a file, or several .csv files (all formats).
-        Load also Axis and Group objects from a file (HDF and pickle formats).
+        Load objects from a file, or several .csv files.
+        The Excel and CSV formats can only contain objects of Array type (plus metadata).
 
         WARNING: never load a file using the pickle engine (.pkl or .pickle) from an untrusted source, as it can lead
         to arbitrary code execution.
@@ -369,46 +376,57 @@ class Session(object):
         --------
         In one module:
 
+        >>> # scalars
+        >>> i, s = 5, 'string'                                                      # doctest: +SKIP
         >>> # axes
-        >>> a, b = Axis("a=a0..a2"), Axis("b=b0..b2")    # doctest: +SKIP
+        >>> a, b = Axis("a=a0..a2"), Axis("b=b0..b2")                               # doctest: +SKIP
         >>> # groups
-        >>> a01 = a['a0,a1'] >> 'a01'                    # doctest: +SKIP
+        >>> a01 = a['a0,a1'] >> 'a01'                                               # doctest: +SKIP
         >>> # arrays
-        >>> arr1, arr2 = ndtest((a, b)), ndtest(a)       # doctest: +SKIP
-        >>> s = Session([('a', a), ('b', b), ('a01', a01), ('arr1', arr1), ('arr2', arr2)])  # doctest: +SKIP
+        >>> arr1, arr2 = ndtest((a, b)), ndtest(a)                                  # doctest: +SKIP
+        >>> ses = Session([('i', i), ('s', s), ('a', a), ('b', b), ('a01', a01),
+        ...                ('arr1', arr1), ('arr2', arr2)])                         # doctest: +SKIP
         >>> # metadata
-        >>> s.meta.title = 'my title'                    # doctest: +SKIP
-        >>> s.meta.author = 'John Smith'                 # doctest: +SKIP
+        >>> ses.meta.title = 'my title'                                             # doctest: +SKIP
+        >>> ses.meta.author = 'John Smith'                                          # doctest: +SKIP
         >>> # save the session in an HDF5 file
-        >>> s.save('input.h5')                           # doctest: +SKIP
+        >>> ses.save('input.h5')                                                    # doctest: +SKIP
 
         In another module: load the whole session
 
         >>> # the load method is automatically called when passing
         >>> # the path of file to the Session constructor
-        >>> s = Session('input.h5')     # doctest: +SKIP
-        >>> s                           # doctest: +SKIP
-        Session(a, b, a01, arr1, arr2)
-        >>> s.meta                      # doctest: +SKIP
+        >>> ses = Session('input.h5')                                               # doctest: +SKIP
+        >>> ses                                                                     # doctest: +SKIP
+        Session(a, a01, arr1, arr2, b, i, s)
+        >>> ses.meta                                                                # doctest: +SKIP
         title: my title
         author: John Smith
 
         Load only some objects
 
-        >>> s = Session()                                   # doctest: +SKIP
-        >>> s.load('input.h5', ['a', 'b', 'arr1', 'arr2'])  # doctest: +SKIP
-        >>> a, b, arr1, arr2 = s['a', 'b', 'arr1', 'arr2']  # doctest: +SKIP
-        >>> # only if you know the order of arrays stored in session
-        >>> a, b, a01, arr1, arr2 = s.values()              # doctest: +SKIP
+        >>> ses = Session()
+        >>> ses.load('input.h5', names=['s', 'a', 'b', 'arr1', 'arr2'], display=True)   # doctest: +SKIP
+        opening input.h5
+        loading Axis object a ... done
+        loading Array object arr1 ... done
+        loading Array object arr2 ... done
+        loading Axis object b ... done
+        loading str object s ... done
 
         Using .csv files (assuming the same session as above)
 
-        >>> s.save('data')                                # doctest: +SKIP
-        >>> s = Session()                                 # doctest: +SKIP
-        >>> # load all .csv files starting with "output" in the data directory
-        >>> s.load('data')                                # doctest: +SKIP
-        >>> # or only arrays (i.e. all CSV files starting with 'arr')
-        >>> s.load('data/arr*.csv')                       # doctest: +SKIP
+        >>> ses.save('data')                                                        # doctest: +SKIP
+        >>> ses = Session()                                                         # doctest: +SKIP
+        >>> # load all .csv files from the 'data' directory
+        >>> ses.load('data', display=True)                                          # doctest: +SKIP
+        opening data
+        loading Array object arr1 ... done
+        loading Array object arr2 ... done
+        >>> # or only arrays containing the character '1' in their names
+        >>> ses.load('data/*1.csv', display=True)                                   # doctest: +SKIP
+        opening data/*1.csv
+        loading Array object arr1 ... done
         """
         if display:
             print("opening", fname)
@@ -416,7 +434,7 @@ class Session(object):
             if all([os.path.splitext(name)[1] == '.csv' for name in names]):
                 engine = ext_default_engine['csv']
             else:
-                raise ValueError("List of paths to only CSV files expected. Got {}".format(names))
+                raise ValueError(f"List of paths to only CSV files expected. Got {names}")
         if engine == 'auto':
             _, ext = os.path.splitext(fname)
             ext = ext.strip('.') if '.' in ext else 'csv'
@@ -433,8 +451,8 @@ class Session(object):
 
     def save(self, fname, names=None, engine='auto', overwrite=True, display=False, **kwargs):
         r"""
-        Dumps Array objects from the current session to a file (all formats).
-        Dumps also Axis and Group objects from the current session to a file (HDF and pickle format).
+        Dumps objects from the current session to a file, or several .csv files.
+        The Excel and CSV formats only dump objects of Array type (plus metadata).
 
         Parameters
         ----------
@@ -442,7 +460,7 @@ class Session(object):
             Path of the file for the dump.
             If objects are saved in CSV files, the path corresponds to a directory.
         names : list of str or None, optional
-            List of names of Array/Axis/Group objects to dump.
+            List of names of objects to dump.
             If `fname` is None, list of paths to CSV files.
             Defaults to all objects present in the Session.
         engine : {'auto', 'pandas_csv', 'pandas_hdf', 'pandas_excel', 'xlwings_excel', 'pickle'}, optional
@@ -455,31 +473,48 @@ class Session(object):
 
         Examples
         --------
+        >>> # scalars
+        >>> i, s = 5, 'string'                                                      # doctest: +SKIP
         >>> # axes
-        >>> a, b = Axis("a=a0..a2"), Axis("b=b0..b2")    # doctest: +SKIP
+        >>> a, b = Axis("a=a0..a2"), Axis("b=b0..b2")                               # doctest: +SKIP
         >>> # groups
-        >>> a01 = a['a0,a1'] >> 'a01'                    # doctest: +SKIP
+        >>> a01 = a['a0,a1'] >> 'a01'                                               # doctest: +SKIP
         >>> # arrays
-        >>> arr1, arr2 = ndtest((a, b)), ndtest(a)       # doctest: +SKIP
-        >>> s = Session([('a', a), ('b', b), ('a01', a01), ('arr1', arr1), ('arr2', arr2)])  # doctest: +SKIP
+        >>> arr1, arr2 = ndtest((a, b)), ndtest(a)                                  # doctest: +SKIP
+        >>> ses = Session([('i', i), ('s', s), ('a', a), ('b', b), ('a01', a01),
+        ...                ('arr1', arr1), ('arr2', arr2)])                         # doctest: +SKIP
         >>> # metadata
-        >>> s.meta.title = 'my title'                    # doctest: +SKIP
-        >>> s.meta.author = 'John Smith'                 # doctest: +SKIP
+        >>> ses.meta.title = 'my title'                                             # doctest: +SKIP
+        >>> ses.meta.author = 'John Smith'                                          # doctest: +SKIP
 
         Save all objects
 
-        >>> s.save('output.h5')                             # doctest: +SKIP
+        >>> ses.save('output.h5', display=True)                                     # doctest: +SKIP
+        dumping i ... done
+        dumping s ... done
+        dumping a ... done
+        dumping b ... done
+        dumping a01 ... done
+        dumping arr1 ... done
+        dumping arr2 ... done
 
         Save only some objects
 
-        >>> s.save('output.h5', ['a', 'b', 'arr1'])         # doctest: +SKIP
+        >>> ses.save('output.h5', names=['s', 'a', 'b', 'arr1', 'arr2'], display=True)  # doctest: +SKIP
+        dumping s ... done
+        dumping a ... done
+        dumping b ... done
+        dumping arr1 ... done
+        dumping arr2 ... done
 
         Update file
 
-        >>> arr1, arr4 = ndtest((3, 3)), ndtest((2, 3))     # doctest: +SKIP
-        >>> s2 = Session([('arr1', arr1), ('arr4', arr4)])  # doctest: +SKIP
+        >>> arr1, arr4 = ndtest((3, 3)), ndtest((2, 3))                             # doctest: +SKIP
+        >>> ses2 = Session([('arr1', arr1), ('arr4', arr4)])                        # doctest: +SKIP
         >>> # replace arr1 and add arr4 in file output.h5
-        >>> s2.save('output.h5', overwrite=False)           # doctest: +SKIP
+        >>> ses2.save('output.h5', overwrite=False, display=True)                   # doctest: +SKIP
+        dumping arr1 ... done
+        dumping arr4 ... done
         """
         if engine == 'auto':
             _, ext = os.path.splitext(fname)
@@ -527,7 +562,7 @@ class Session(object):
         Examples
         --------
         >>> s = Session(arr1=ndtest(3), arr2=ndtest((2, 2)))
-        >>> s.to_globals()
+        >>> s.to_globals(warn=False)
         >>> arr1
         a  a0  a1  a2
             0   1   2
@@ -549,14 +584,14 @@ class Session(object):
         if inplace:
             for k, v in items:
                 if k not in d:
-                    raise ValueError("'{}' not found in current namespace. Session.to_globals(inplace=True) requires "
-                                     "all arrays to already exist.".format(k))
+                    raise ValueError(f"'{k}' not found in current namespace. Session.to_globals(inplace=True) requires "
+                                     f"all arrays to already exist.")
                 if not isinstance(v, Array):
                     continue
                 if not d[k].axes == v.axes:
-                    raise ValueError("Session.to_globals(inplace=True) requires the existing (destination) arrays "
-                                     "to have the same axes than those stored in the session and this is not the case "
-                                     "for '{}'.\nexisting: {}\nsession: {}".format(k, d[k].info, v.info))
+                    raise ValueError(f"Session.to_globals(inplace=True) requires the existing (destination) arrays "
+                                     f"to have the same axes than those stored in the session and this is not the case "
+                                     f"for '{k}'.\nexisting: {d[k].info}\nsession: {v.info}")
                 d[k][:] = v
         else:
             for k, v in items:
@@ -564,7 +599,7 @@ class Session(object):
 
     def to_pickle(self, fname, names=None, overwrite=True, display=False, **kwargs):
         r"""
-        Dumps Array, Axis and Group objects from the current session to a file using pickle.
+        Dumps objects from the current session to a file using pickle.
 
         WARNING: never load a pickle file (.pkl or .pickle) from an untrusted source, as it can lead to arbitrary code
         execution.
@@ -574,7 +609,7 @@ class Session(object):
         fname : str
             Path for the dump.
         names : list of str or None, optional
-            Names of Array/Axis/Group objects to dump.
+            Names of objects to dump.
             Defaults to all objects present in the Session.
         overwrite: bool, optional
             Whether or not to overwrite an existing file, if any.
@@ -584,24 +619,39 @@ class Session(object):
 
         Examples
         --------
+        >>> # scalars
+        >>> i, s = 5, 'string'                                                      # doctest: +SKIP
         >>> # axes
-        >>> a, b = Axis("a=a0..a2"), Axis("b=b0..b2")    # doctest: +SKIP
+        >>> a, b = Axis("a=a0..a2"), Axis("b=b0..b2")                               # doctest: +SKIP
         >>> # groups
-        >>> a01 = a['a0,a1'] >> 'a01'                    # doctest: +SKIP
+        >>> a01 = a['a0,a1'] >> 'a01'                                               # doctest: +SKIP
         >>> # arrays
-        >>> arr1, arr2 = ndtest((a, b)), ndtest(a)       # doctest: +SKIP
-        >>> s = Session([('a', a), ('b', b), ('a01', a01), ('arr1', arr1), ('arr2', arr2)])  # doctest: +SKIP
+        >>> arr1, arr2 = ndtest((a, b)), ndtest(a)                                  # doctest: +SKIP
+        >>> ses = Session([('i', i), ('s', s), ('a', a), ('b', b), ('a01', a01),
+        ...                ('arr1', arr1), ('arr2', arr2)])                         # doctest: +SKIP
         >>> # metadata
-        >>> s.meta.title = 'my title'                    # doctest: +SKIP
-        >>> s.meta.author = 'John Smith'                 # doctest: +SKIP
+        >>> ses.meta.title = 'my title'                                             # doctest: +SKIP
+        >>> ses.meta.author = 'John Smith'                                          # doctest: +SKIP
 
-        Save all arrays
+        Save all objects
 
-        >>> s.to_pickle('output.pkl')  # doctest: +SKIP
+        >>> ses.to_pickle('output.pkl', display=True)                               # doctest: +SKIP
+        dumping i ... done
+        dumping s ... done
+        dumping a ... done
+        dumping b ... done
+        dumping a01 ... done
+        dumping arr1 ... done
+        dumping arr2 ... done
 
         Save only some objects
 
-        >>> s.to_pickle('output.pkl', ['a', 'b', 'arr1'])  # doctest: +SKIP
+        >>> ses.to_pickle('output.pkl', names=['s', 'a', 'b', 'arr1', 'arr2'], display=True)    # doctest: +SKIP
+        dumping s ... done
+        dumping a ... done
+        dumping b ... done
+        dumping arr1 ... done
+        dumping arr2 ... done
         """
         self.save(fname, names, ext_default_engine['pkl'], overwrite, display, **kwargs)
 
@@ -609,14 +659,14 @@ class Session(object):
 
     def to_hdf(self, fname, names=None, overwrite=True, display=False, **kwargs):
         r"""
-        Dumps Array, Axis and Group objects from the current session to an HDF file.
+        Dumps objects from the current session to an HDF file.
 
         Parameters
         ----------
         fname : str
             Path of the file for the dump.
         names : list of str or None, optional
-            Names of Array/Axis/Group objects to dump.
+            Names of objects to dump.
             Defaults to all objects present in the Session.
         overwrite: bool, optional
             Whether or not to overwrite an existing file, if any.
@@ -626,24 +676,39 @@ class Session(object):
 
         Examples
         --------
+        >>> # scalars
+        >>> i, s = 5, 'string'                                                      # doctest: +SKIP
         >>> # axes
-        >>> a, b = Axis("a=a0..a2"), Axis("b=b0..b2")    # doctest: +SKIP
+        >>> a, b = Axis("a=a0..a2"), Axis("b=b0..b2")                               # doctest: +SKIP
         >>> # groups
-        >>> a01 = a['a0,a1'] >> 'a01'                    # doctest: +SKIP
+        >>> a01 = a['a0,a1'] >> 'a01'                                               # doctest: +SKIP
         >>> # arrays
-        >>> arr1, arr2 = ndtest((a, b)), ndtest(a)       # doctest: +SKIP
-        >>> s = Session([('a', a), ('b', b), ('a01', a01), ('arr1', arr1), ('arr2', arr2)])  # doctest: +SKIP
+        >>> arr1, arr2 = ndtest((a, b)), ndtest(a)                                  # doctest: +SKIP
+        >>> ses = Session([('i', i), ('s', s), ('a', a), ('b', b), ('a01', a01),
+        ...                ('arr1', arr1), ('arr2', arr2)])                         # doctest: +SKIP
         >>> # metadata
-        >>> s.meta.title = 'my title'                    # doctest: +SKIP
-        >>> s.meta.author = 'John Smith'                 # doctest: +SKIP
+        >>> ses.meta.title = 'my title'                                             # doctest: +SKIP
+        >>> ses.meta.author = 'John Smith'                                          # doctest: +SKIP
 
-        Save all arrays
+        Save all objects
 
-        >>> s.to_hdf('output.h5')  # doctest: +SKIP
+        >>> ses.to_hdf('output.h5', display=True)                                   # doctest: +SKIP
+        dumping i ... done
+        dumping s ... done
+        dumping a ... done
+        dumping b ... done
+        dumping a01 ... done
+        dumping arr1 ... done
+        dumping arr2 ... done
 
         Save only some objects
 
-        >>> s.to_hdf('output.h5', ['a', 'b', 'arr1'])  # doctest: +SKIP
+        >>> ses.to_hdf('output.h5', names=['s', 'a', 'b', 'arr1', 'arr2'], display=True)    # doctest: +SKIP
+        dumping s ... done
+        dumping a ... done
+        dumping b ... done
+        dumping arr1 ... done
+        dumping arr2 ... done
         """
         self.save(fname, names, ext_default_engine['hdf'], overwrite, display, **kwargs)
 
@@ -672,24 +737,35 @@ class Session(object):
 
         Examples
         --------
+        >>> # scalars
+        >>> i, s = 5, 'string'                                                      # doctest: +SKIP
         >>> # axes
-        >>> a, b = Axis("a=a0..a2"), Axis("b=b0..b2")    # doctest: +SKIP
+        >>> a, b = Axis("a=a0..a2"), Axis("b=b0..b2")                               # doctest: +SKIP
         >>> # groups
-        >>> a01 = a['a0,a1'] >> 'a01'                    # doctest: +SKIP
+        >>> a01 = a['a0,a1'] >> 'a01'                                               # doctest: +SKIP
         >>> # arrays
-        >>> arr1, arr2 = ndtest((a, b)), ndtest(a)       # doctest: +SKIP
-        >>> s = Session([('a', a), ('b', b), ('a01', a01), ('arr1', arr1), ('arr2', arr2)])  # doctest: +SKIP
+        >>> arr1, arr2 = ndtest((a, b)), ndtest(a)                                  # doctest: +SKIP
+        >>> ses = Session([('i', i), ('s', s), ('a', a), ('b', b), ('a01', a01),
+        ...                ('arr1', arr1), ('arr2', arr2)])                         # doctest: +SKIP
         >>> # metadata
-        >>> s.meta.title = 'my title'                    # doctest: +SKIP
-        >>> s.meta.author = 'John Smith'                 # doctest: +SKIP
+        >>> ses.meta.title = 'my title'                                             # doctest: +SKIP
+        >>> ses.meta.author = 'John Smith'                                          # doctest: +SKIP
 
-        Save all arrays
+        Save all arrays (and arrays only)
 
-        >>> s.to_excel('output.xlsx')  # doctest: +SKIP
+        >>> ses.to_excel('output.xlsx', display=True)                               # doctest: +SKIP
+        dumping i ... Cannot dump i. int is not a supported type
+        dumping s ... Cannot dump s. str is not a supported type
+        dumping a ... Cannot dump a. Axis is not a supported type
+        dumping b ... Cannot dump b. Axis is not a supported type
+        dumping a01 ... Cannot dump a01. LGroup is not a supported type
+        dumping arr1 ... done
+        dumping arr2 ... done
 
-        Save only some objects
+        Save only some arrays
 
-        >>> s.to_excel('output.xlsx', ['a', 'b', 'arr1'])  # doctest: +SKIP
+        >>> ses.to_excel('output.xlsx', names=['arr1'], display=True)               # doctest: +SKIP
+        dumping arr1 ... done
         """
         self.save(fname, names, ext_default_engine['xlsx'], overwrite, display, **kwargs)
 
@@ -716,24 +792,35 @@ class Session(object):
 
         Examples
         --------
+        >>> # scalars
+        >>> i, s = 5, 'string'                                                      # doctest: +SKIP
         >>> # axes
-        >>> a, b = Axis("a=a0..a2"), Axis("b=b0..b2")    # doctest: +SKIP
+        >>> a, b = Axis("a=a0..a2"), Axis("b=b0..b2")                               # doctest: +SKIP
         >>> # groups
-        >>> a01 = a['a0,a1'] >> 'a01'                    # doctest: +SKIP
+        >>> a01 = a['a0,a1'] >> 'a01'                                               # doctest: +SKIP
         >>> # arrays
-        >>> arr1, arr2 = ndtest((a, b)), ndtest(a)       # doctest: +SKIP
-        >>> s = Session([('a', a), ('b', b), ('a01', a01), ('arr1', arr1), ('arr2', arr2)])  # doctest: +SKIP
+        >>> arr1, arr2 = ndtest((a, b)), ndtest(a)                                  # doctest: +SKIP
+        >>> ses = Session([('i', i), ('s', s), ('a', a), ('b', b), ('a01', a01),
+        ...                ('arr1', arr1), ('arr2', arr2)])                         # doctest: +SKIP
         >>> # metadata
-        >>> s.meta.title = 'my title'                    # doctest: +SKIP
-        >>> s.meta.author = 'John Smith'                 # doctest: +SKIP
+        >>> ses.meta.title = 'my title'                                             # doctest: +SKIP
+        >>> ses.meta.author = 'John Smith'                                          # doctest: +SKIP
 
-        Save all arrays
+        Save all arrays (and arrays only)
 
-        >>> s.to_csv('./Output')  # doctest: +SKIP
+        >>> ses.to_csv('output', display=True)                                      # doctest: +SKIP
+        dumping i ... Cannot dump i. int is not a supported type
+        dumping s ... Cannot dump s. str is not a supported type
+        dumping a ... Cannot dump a. Axis is not a supported type
+        dumping b ... Cannot dump b. Axis is not a supported type
+        dumping a01 ... Cannot dump a01. LGroup is not a supported type
+        dumping arr1 ... done
+        dumping arr2 ... done
 
         Save only some arrays
 
-        >>> s.to_csv('./Output', ['a', 'b', 'arr1'])  # doctest: +SKIP
+        >>> ses.to_csv('output', names=['arr1'], display=True)                      # doctest: +SKIP
+        dumping arr1 ... done
         """
         self.save(fname, names, ext_default_engine['csv'], display=display, **kwargs)
 
@@ -918,14 +1005,15 @@ class Session(object):
         return self._objects.items()
 
     def __repr__(self):
-        return 'Session({})'.format(', '.join(self.keys()))
+        keys = ", ".join(self.keys())
+        return f'Session({keys})'
 
     def __len__(self):
         return len(self._objects)
 
     # binary operations are dispatched element-wise to all arrays (we consider Session as an array-like)
     def _binop(opname, arrays_only=True):
-        opfullname = '__%s__' % opname
+        opfullname = f'__{opname}__'
 
         def opmethod(self, other):
             self_keys = set(self.keys())
@@ -947,8 +1035,9 @@ class Session(object):
                             res_item = nan
                         # this should only ever happen when self_array is a non Array (eg. nan)
                         if res_item is NotImplemented:
+                            inv_opname = f'__{inverseop(opname)}__'
                             try:
-                                res_item = getattr(other_operand, '__%s__' % inverseop(opname))(self_item)
+                                res_item = getattr(other_operand, inv_opname)(self_item)
                             # TypeError for str arrays, ValueError for incompatible axes, ...
                             except Exception:
                                 res_item = nan
@@ -972,7 +1061,7 @@ class Session(object):
     # element-wise method factory
     # unary operations are (also) dispatched element-wise to all arrays
     def _unaryop(opname):
-        opfullname = '__%s__' % opname
+        opfullname = f'__{opname}__'
 
         def opmethod(self):
             with np.errstate(call=_session_float_error_handler):
@@ -1368,10 +1457,9 @@ class Session(object):
                 tmpl = template.get(t, "{key}: {value}")
             else:
                 tmpl = template[Metadata]
-            if not (isinstance(tmpl, basestring) or callable(tmpl)):
-                raise TypeError("Expected a string template or a function for type {}. "
-                                "Got {}".format(type(v), type(tmpl)))
-            if isinstance(tmpl, basestring):
+            if not (isinstance(tmpl, str) or callable(tmpl)):
+                raise TypeError(f"Expected a string template or a function for type {type(v)}. Got {type(tmpl)}")
+            if isinstance(tmpl, str):
                 if isinstance(v, Axis):
                     return tmpl.format(key=k, name=v.name, labels=v.labels_summary(), length=len(v))
                 elif isinstance(v, Group):

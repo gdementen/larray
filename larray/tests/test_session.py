@@ -1,17 +1,19 @@
-from __future__ import absolute_import, division, print_function
-
 import os
+import re
 import shutil
+import pickle
+from datetime import date, time, datetime
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from larray.tests.common import (assert_array_nan_equal, inputpath, tmp_path, meta,
-                                 needs_xlwings, needs_pytables, needs_xlrd)
+from larray.tests.common import meta            # noqa: F401
+from larray.tests.common import (assert_array_nan_equal, inputpath, tmp_path,
+                                 needs_xlwings, needs_pytables, needs_openpyxl, must_warn)
+from larray.inout.common import _supported_scalars_types
 from larray import (Session, Axis, Array, Group, isnan, zeros_like, ndtest, ones_like, ones, full,
                     local_arrays, global_arrays, arrays)
-from larray.util.compat import pickle, PY2
 
 
 def equal(o1, o2):
@@ -26,7 +28,7 @@ def equal(o1, o2):
 def assertObjListEqual(got, expected):
     assert len(got) == len(expected)
     for e1, e2 in zip(got, expected):
-        assert equal(e1, e2), "{} != {}".format(e1, e2)
+        assert equal(e1, e2), f"{e1} != {e2}"
 
 
 a = Axis('a=a0..a2')
@@ -67,7 +69,8 @@ def test_init_session(meta):
 @needs_xlwings
 def test_init_session_xlsx():
     s = Session(inputpath('demography_eurostat.xlsx'))
-    assert s.names == ['births', 'deaths', 'immigration', 'pop', 'pop_benelux']
+    assert s.names == ['births', 'deaths', 'immigration', 'population',
+                       'population_5_countries', 'population_benelux']
 
 
 @needs_pytables
@@ -177,7 +180,7 @@ def test_names(session):
 def _test_io(fpath, session, meta, engine):
     is_excel_or_csv = 'excel' in engine or 'csv' in engine
 
-    kind = Array if is_excel_or_csv else (Axis, Group, Array)
+    kind = Array if is_excel_or_csv else (Axis, Group, Array) + _supported_scalars_types
     session = session.filter(kind=kind)
 
     session.meta = meta
@@ -189,7 +192,7 @@ def _test_io(fpath, session, meta, engine):
     # use Session.names instead of Session.keys because CSV, Excel and HDF do *not* keep ordering
     assert s.names == session.names
     assert s.equals(session)
-    if not PY2 and not is_excel_or_csv:
+    if not is_excel_or_csv:
         for key in s.filter(kind=Axis).keys():
             assert s[key].dtype == session[key].dtype
     if engine != 'pandas_excel':
@@ -225,13 +228,33 @@ def _test_io(fpath, session, meta, engine):
         assert s.meta == meta
 
 
+def _add_scalars_to_session(s):
+    # 's' for scalar
+    s['s_int'] = 5
+    s['s_float'] = 5.5
+    s['s_bool'] = True
+    s['s_str'] = 'string'
+    s['s_date'] = date(2020, 1, 10)
+    s['s_time'] = time(11, 23, 54)
+    s['s_datetime'] = datetime(2020, 1, 10, 11, 23, 54)
+    return s
+
+
 @needs_pytables
 def test_h5_io(tmpdir, session, meta):
+    session = _add_scalars_to_session(session)
     fpath = tmp_path(tmpdir, 'test_session.h5')
-    _test_io(fpath, session, meta, engine='pandas_hdf')
+
+    msg = "\nyour performance may suffer as PyTables will pickle object types"
+    regex = re.compile(msg, flags=re.MULTILINE)
+
+    # for some reason the PerformanceWarning is not detected as such, so this does not work:
+    # with pytest.warns(tables.PerformanceWarning):
+    with pytest.warns(Warning, match=regex):
+        _test_io(fpath, session, meta, engine='pandas_hdf')
 
 
-@needs_xlrd
+@needs_openpyxl
 def test_xlsx_pandas_io(tmpdir, session, meta):
     fpath = tmp_path(tmpdir, 'test_session.xlsx')
     _test_io(fpath, session, meta, engine='pandas_excel')
@@ -262,7 +285,7 @@ def test_csv_io(tmpdir, session, meta):
             f.write(',",')
 
         # try loading the directory with the invalid file
-        with pytest.raises(pd.errors.ParserError) as e_info:
+        with pytest.raises(pd.errors.ParserError):
             s = Session(pattern)
 
         # test loading a pattern, ignoring invalid/unsupported files
@@ -275,18 +298,16 @@ def test_csv_io(tmpdir, session, meta):
 
 
 def test_pickle_io(tmpdir, session, meta):
+    session = _add_scalars_to_session(session)
     fpath = tmp_path(tmpdir, 'test_session.pkl')
     _test_io(fpath, session, meta, engine='pickle')
 
 
 def test_to_globals(session):
-    with pytest.warns(RuntimeWarning) as caught_warnings:
+    msg = "Session.to_globals should usually only be used in interactive consoles and not in scripts. " \
+          "Use warn=False to deactivate this warning."
+    with must_warn(RuntimeWarning, msg=msg):
         session.to_globals()
-    assert len(caught_warnings) == 1
-    assert caught_warnings[0].message.args[0] == "Session.to_globals should usually only be used in interactive " \
-                                                 "consoles and not in scripts. Use warn=False to deactivate this " \
-                                                 "warning."
-    assert caught_warnings[0].filename == __file__
 
     assert a is session.a
     assert b is session.b
@@ -457,11 +478,8 @@ def test_div(session):
     sess = session
     other = Session({'e': e - 1, 'f': f + 1})
 
-    with pytest.warns(RuntimeWarning) as caught_warnings:
+    with must_warn(RuntimeWarning, msg="divide by zero encountered during operation"):
         res = sess / other
-    assert len(caught_warnings) == 1
-    assert caught_warnings[0].message.args[0] == "divide by zero encountered during operation"
-    assert caught_warnings[0].filename == __file__
 
     with np.errstate(divide='ignore', invalid='ignore'):
         flat_e = np.arange(6) / np.arange(-1, 5)
@@ -476,19 +494,30 @@ def test_rdiv(session):
     sess = session
 
     # scalar / session
-    res = 2 / sess
-    assert_array_nan_equal(res['e'], 2 / e)
-    assert_array_nan_equal(res['f'], 2 / f)
-    assert_array_nan_equal(res['g'], 2 / g)
+    with must_warn(RuntimeWarning, msg="divide by zero encountered during operation", check_num=False):
+        res = 2 / sess
+    with np.errstate(divide='ignore'):
+        expected_e = 2 / e
+        expected_f = 2 / f
+        expected_g = 2 / g
+    assert_array_nan_equal(res['e'], expected_e)
+    assert_array_nan_equal(res['f'], expected_f)
+    assert_array_nan_equal(res['g'], expected_g)
     assert res.a is a
     assert res.a01 is a01
     assert res.c is c
 
     # dict(Array and scalar) - session
     other = {'e': e, 'f': f}
-    res = other / sess
-    assert_array_nan_equal(res['e'], e / e)
-    assert_array_nan_equal(res['f'], f / f)
+    with must_warn(RuntimeWarning,
+                   msg="invalid value (NaN) encountered during operation (this is typically caused by a 0 / 0)",
+                   check_num=False):
+        res = other / sess
+    with np.errstate(invalid='ignore'):
+        expected_e = e / e
+        expected_f = f / f
+    assert_array_nan_equal(res['e'], expected_e)
+    assert_array_nan_equal(res['f'], expected_f)
     assert res.a is a
     assert res.a01 is a01
     assert res.c is c

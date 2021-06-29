@@ -1,12 +1,12 @@
-from __future__ import absolute_import, division, print_function
-
 import re
 import os
+import faulthandler
 
 import pytest
 import numpy as np
+import pywintypes
 
-from larray.tests.common import needs_xlwings
+from larray.tests.common import needs_xlwings, needs_pytables, must_warn
 from larray import ndtest, open_excel, asarray, Axis, nan, ExcelReport
 from larray.inout import xw_excel
 from larray.example import load_example_data, EXAMPLE_EXCEL_TEMPLATES_DIR
@@ -18,10 +18,20 @@ class TestWorkbook(object):
         # not using context manager because we call .quit manually
         wb1 = open_excel(visible=False)
         app1 = wb1.app
+        # close workbook but leave app instance open (anything using wb1 will fail now)
         wb1.close()
-        # anything using wb1 will fail
-        with pytest.raises(Exception):
+
+        # disable faulthandler to avoid annoying "Windows fatal exception" messages in the console
+        # See https://github.com/pywinauto/pywinauto/issues/858
+        # and https://stackoverflow.com/questions/57523762/pytest-windows-fatal-exception-code-0x8001010d
+        faulthandler_enabled = faulthandler.is_enabled()
+        if faulthandler_enabled:
+            faulthandler.disable()
+        with pytest.raises(pywintypes.com_error):
             wb1.sheet_names()
+        if faulthandler_enabled:
+            faulthandler.enable()
+
         wb2 = open_excel(visible=False)
         app2 = wb2.app
         assert app1 == app2 == xw_excel.global_app
@@ -29,8 +39,12 @@ class TestWorkbook(object):
         # reference to it).
         app1.quit()
         # anything using wb2 will fail
-        with pytest.raises(Exception):
+        if faulthandler_enabled:
+            faulthandler.disable()
+        with pytest.raises(pywintypes.com_error):
             wb2.sheet_names()
+        if faulthandler_enabled:
+            faulthandler.enable()
 
         # in any case, this should work
         with open_excel(visible=False) as wb:
@@ -52,9 +66,8 @@ class TestWorkbook(object):
             assert isinstance(sheet, xw_excel.Sheet)
             assert sheet.name == 'Sheet1'
 
-            with pytest.raises(KeyError) as e_info:
+            with pytest.raises(KeyError, match="Workbook has no sheet named this_sheet_does_not_exist"):
                 wb['this_sheet_does_not_exist']
-            assert e_info.value.args[0] == "Workbook has no sheet named this_sheet_does_not_exist"
 
     def test_setitem(self):
         with open_excel(visible=False) as wb:
@@ -80,9 +93,8 @@ class TestWorkbook(object):
 
             with open_excel(visible=False, app="new") as wb2:
                 assert wb.app != wb2.app
-                with pytest.raises(ValueError) as e_info:
+                with pytest.raises(ValueError, match="cannot copy a sheet from one instance of Excel to another"):
                     wb2['sheet1'] = wb['sheet1']
-                assert e_info.value.args[0] == "cannot copy a sheet from one instance of Excel to another"
 
             # group key
             arr = ndtest((3, 3))
@@ -206,9 +218,8 @@ class TestRange(object):
             rng = sheet['A3']
             assert int(rng) == 1
             assert float(rng) == 1.5
-            with pytest.raises(TypeError) as e_info:
+            with pytest.raises(TypeError, match="only integer scalars can be converted to a scalar index"):
                 rng.__index__()
-            assert e_info.value.args[0] == "only integer scalars can be converted to a scalar index"
 
     def test_asarray(self):
         with open_excel(visible=False) as wb:
@@ -220,10 +231,6 @@ class TestRange(object):
             res1 = np.asarray(sheet['A1:C2'])
             assert np.array_equal(res1, arr1.data)
             assert res1.dtype == arr1.dtype
-
-    def test_asarray(self):
-        with open_excel(visible=False) as wb:
-            sheet = wb[0]
 
             arr1 = ndtest([Axis(2), Axis(3)])
             # no header so that we have an uniform dtype for the whole sheet
@@ -278,7 +285,7 @@ def test_excel_report_setting_template():
     # test setting template dir
     # 1) wrong template dir
     wrong_template_dir = r"C:\Wrong\Directory\Path"
-    msg = "The directory {} could not be found".format(wrong_template_dir)
+    msg = f"The directory {wrong_template_dir} could not be found"
     with pytest.raises(ValueError, match=re.escape(msg)):
         excel_report.template_dir = wrong_template_dir
     # 2) correct path
@@ -301,15 +308,12 @@ def test_excel_report_setting_template():
 def test_excel_report_sheets():
     report = ExcelReport()
     # test adding new sheets
-    sheet_population = report.new_sheet('Population')
-    sheet_births = report.new_sheet('Births')
-    sheet_deaths = report.new_sheet('Deaths')
+    report.new_sheet('Population')
+    report.new_sheet('Births')
+    report.new_sheet('Deaths')
     # test warning if sheet already exists
-    with pytest.warns(UserWarning) as caught_warnings:
-        sheet_population2 = report.new_sheet('Population')
-    assert len(caught_warnings) == 1
-    warn_msg = "Sheet 'Population' already exists in the report and will be reset"
-    assert caught_warnings[0].message.args[0] == warn_msg
+    with must_warn(UserWarning, msg="Sheet 'Population' already exists in the report and will be reset"):
+        sheet_population2 = report.new_sheet('Population')  # noqa: F841
     # test sheet_names()
     assert report.sheet_names() == ['Population', 'Births', 'Deaths']
 
@@ -324,11 +328,11 @@ def test_excel_report_titles():
     sheet_titles.add_title('Default title')
     # 2) specify width and height
     width, height = 1100, 100
-    sheet_titles.add_title('Width = {} and Height = {}'.format(width, height),
+    sheet_titles.add_title(f'Width = {width} and Height = {height}',
                            width=width, height=height)
     # 3) specify fontsize
     fontsize = 13
-    sheet_titles.add_title('Fontsize = {}'.format(fontsize), fontsize=fontsize)
+    sheet_titles.add_title(f'Fontsize = {fontsize}', fontsize=fontsize)
 
     # generate Excel file
     fpath = 'test_excel_report_titles.xlsx'
@@ -336,6 +340,7 @@ def test_excel_report_titles():
 
 
 @needs_xlwings
+@needs_pytables
 def test_excel_report_arrays():
     excel_report = ExcelReport(EXAMPLE_EXCEL_TEMPLATES_DIR)
     demo = load_example_data('demography_eurostat')
@@ -343,6 +348,12 @@ def test_excel_report_arrays():
     population_be = population['Belgium']
     population_be_nan = population_be.astype(float)
     population_be_nan[2013] = nan
+
+    # fake simple user defined function to test if any user defined function (and their arguments)
+    # is actually called and correctly handled.
+    def customize_func(obj_chart, alternative_title):
+        obj_chart.HasTitle = True
+        obj_chart.ChartTitle.Caption = alternative_title
 
     # test dumping arrays
     sheet_graphs = excel_report.new_sheet('Graphs')
@@ -357,18 +368,24 @@ def test_excel_report_arrays():
     # 3) specify width and height
     sheet_graphs.add_title('Alternative Width and Height')
     width, height = 500, 300
-    sheet_graphs.add_graph(population_be, 'width = {} and Height = {}'.format(width, height),
+    sheet_graphs.add_graph(population_be, f'width = {width} and Height = {height}',
                            width=width, height=height)
     # 4) specify template
     template_name = 'Line_Marker'
-    sheet_graphs.add_title('Template = {}'.format(template_name))
-    sheet_graphs.add_graph(population_be, 'Template = {}'.format(template_name), template_name)
+    sheet_graphs.add_title(f'Template = {template_name}')
+    sheet_graphs.add_graph(population_be, f'Template = {template_name}', template_name)
+    # 5) specify min_y and max_y
+    sheet_graphs.add_graph(population_be, 'min (max) Y axis is 5e6 (6e6)', min_y=5e6, max_y=6e6)
+    # 6) specify the space between 2 ticks
+    sheet_graphs.add_graph(population_be, 'periodicity = every 2 years', xticks_spacing=2)
+    # 7) pass a user defined function
+    sheet_graphs.add_graph(population_be, customize_func=customize_func,
+                           customize_kwargs={'alternative_title': 'alternative title'})
 
     # test setting default size
     # 1) pass a not registered kind of item
     item_type = 'unknown_item'
-    msg = "Item type {} is not registered. Please choose in " \
-          "list ['graph', 'title']".format(item_type)
+    msg = f"Item type {item_type} is not registered. Please choose in list ['graph', 'title']"
     with pytest.raises(ValueError, match=re.escape(msg)):
         sheet_graphs.set_item_default_size(item_type, width, height)
     # 2) update default size for graphs
@@ -386,10 +403,30 @@ def test_excel_report_arrays():
 
     # testing add_graphs
     sheet_graphs = excel_report.new_sheet('Graphs3')
+    # 1) default
     sheet_graphs.add_title('add_graphs')
     sheet_graphs.add_graphs({'Population for {country} - {gender}': population},
                             {'gender': population.gender, 'country': population.country},
                             template='line', width=350, height=250, graphs_per_row=3)
+    # 2) specify min_y and max_y
+    sheet_graphs.add_title('min_y = 0 and max_y = 50e6')
+    sheet_graphs.add_graphs({'Population for {country} - {gender}': population},
+                            {'gender': population.gender, 'country': population.country},
+                            template='line', width=350, height=250, graphs_per_row=3,
+                            min_y=0, max_y=50e6)
+    # 3) specify the space between 2 ticks
+    sheet_graphs.add_title('periodicity = every 2 years')
+    sheet_graphs.add_graphs({'Population for {country} - {gender}': population},
+                            {'gender': population.gender, 'country': population.country},
+                            template='line', width=350, height=250, graphs_per_row=3,
+                            xticks_spacing=2)
+    # 4) pass a user defined function
+    sheet_graphs.add_title('user defined function')
+    sheet_graphs.add_graphs({'Population for {country} - {gender}': population},
+                            {'gender': population.gender, 'country': population.country},
+                            template='line', width=350, height=250, graphs_per_row=3,
+                            customize_func=customize_func,
+                            customize_kwargs={'alternative_title': 'alternative title'})
 
     # generate Excel file
     fpath = 'test_excel_report_arrays.xlsx'

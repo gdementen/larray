@@ -1,6 +1,3 @@
-# -*- coding: utf8 -*-
-from __future__ import absolute_import, division, print_function
-
 import os
 import re
 import sys
@@ -8,19 +5,21 @@ import sys
 import pytest
 import numpy as np
 import pandas as pd
+
+from io import StringIO
 from collections import OrderedDict
 
-from larray.tests.common import (inputpath, tmp_path, meta,
+from larray.tests.common import meta                        # noqa: F401
+from larray.tests.common import (inputpath, tmp_path,
                                  assert_array_equal, assert_array_nan_equal, assert_larray_equiv, assert_larray_equal,
-                                 needs_xlwings, needs_pytables, needs_xlsxwriter, needs_xlrd,
-                                 needs_python35, needs_python36, needs_python37)
+                                 needs_xlwings, needs_pytables, needs_xlsxwriter, needs_openpyxl, needs_python37,
+                                 must_warn)
 from larray import (Array, LArray, Axis, LGroup, union, zeros, zeros_like, ndtest, empty, ones, eye, diag, stack,
                     clip, exp, where, X, mean, isnan, round, read_hdf, read_csv, read_eurostat, read_excel,
                     from_lists, from_string, open_excel, from_frame, sequence, nan, IGroup)
 from larray.inout.pandas import from_series
 from larray.core.axis import _to_ticks, _to_key
 from larray.util.misc import LHDFStore
-from larray.util.compat import StringIO
 from larray.core.metadata import Metadata
 
 
@@ -142,7 +141,7 @@ def test_meta_arg_array_creation(array):
 # ================ #
 
 # AXES
-lipro = Axis(['P%02d' % i for i in range(1, 16)], 'lipro')
+lipro = Axis([f'P{i:02d}' for i in range(1, 16)], 'lipro')
 age = Axis('age=0..115')
 sex = Axis('sex=M,F')
 vla = 'A11,A12,A13,A23,A24,A31,A32,A33,A34,A35,A36,A37,A38,A41,A42,A43,A44,A45,A46,A71,A72,A73'
@@ -181,11 +180,8 @@ io_narrow_missing_values[2, 'b1', 'c1'] = nan
 
 
 def test_larray_renamed_as_array():
-    with pytest.warns(FutureWarning) as caught_warnings:
+    with must_warn(FutureWarning, msg="LArray has been renamed as Array."):
         arr = LArray([0, 1, 2, 3], 'a=a0..a3')
-    assert len(caught_warnings) == 1
-    assert caught_warnings[0].message.args[0] == "LArray has been renamed as Array."
-    assert caught_warnings[0].filename == __file__
 
 
 def test_ndtest():
@@ -248,9 +244,9 @@ def test_bool():
 
 
 def test_iter(small_array):
-    l = list(small_array)
-    assert_array_equal(l[0], small_array['M'])
-    assert_array_equal(l[1], small_array['F'])
+    list_ = list(small_array)
+    assert_array_equal(list_[0], small_array['M'])
+    assert_array_equal(list_[1], small_array['F'])
 
 
 def test_keys():
@@ -1317,18 +1313,18 @@ def test_setitem_larray(array, small_array):
 
     # 6) incompatible axes
     arr = small_array.copy()
-    la2 = small_array.copy()
+    subset_axes = arr['P01'].axes
+    value = small_array.copy()
+    expected_msg = f"Value {value.axes - subset_axes!s} axis is not present in target subset {subset_axes!s}. " \
+                   f"A value can only have the same axes or fewer axes than the subset being targeted"
+    with pytest.raises(ValueError, match=expected_msg):
+        arr['P01'] = value
 
-    with pytest.raises(ValueError, match="Value {!s} axis is not present in target subset {!s}. "
-                                         "A value can only have the same axes or fewer axes than the subset "
-                                         "being targeted".format(la2.axes - arr['P01'].axes, arr['P01'].axes)):
-        arr['P01'] = la2
-
-    la2 = arr.rename('sex', 'gender')
-    with pytest.raises(ValueError, match="Value {!s} axis is not present in target subset {!s}. "
-                                         "A value can only have the same axes or fewer axes than the subset "
-                                         "being targeted".format(la2['P01'].axes - arr['P01'].axes, arr['P01'].axes)):
-        arr['P01'] = la2['P01']
+    value = arr.rename('sex', 'gender')['P01']
+    expected_msg = f"Value {value.axes - subset_axes!s} axis is not present in target subset {subset_axes!s}. " \
+                   f"A value can only have the same axes or fewer axes than the subset being targeted"
+    with pytest.raises(ValueError, match=expected_msg):
+        arr['P01'] = value
 
     # 7) incompatible labels
     sex2 = Axis('sex=F,M')
@@ -1861,8 +1857,6 @@ def test_group_agg_guess_axis(array):
     res = array.sum('M >> men;M,F >> all')
     assert res.shape == (116, 44, 2, 15)
     assert 'sex' in res.axes
-    men = sex['M'].named('men')
-    all_ = sex['M,F'].named('all')
     assert_array_equal(res.axes.sex.labels, ['men', 'all'])
     assert_array_equal(res['men'], raw[:, :, 0, :])
     assert_array_equal(res['all'], raw.sum(2))
@@ -1888,6 +1882,10 @@ def test_group_agg_guess_axis(array):
     # c) chain group aggregate after axis aggregate
     res = array.sum(age, sex).sum((vla, wal, bru, belgium))
     assert res.shape == (4, 15)
+
+    # issue #868: labels in reverse order with a "step" between them > index of last label
+    arr = ndtest(4)
+    assert arr.sum('a3,a1') == 4
 
 
 def test_group_agg_label_group(array):
@@ -2397,6 +2395,10 @@ def test_agg_by(array):
     assert array.sum_by().shape == ()
     assert array.sum_by() == array.sum()
 
+    # all axes
+    assert array.sum_by(geo, age, lipro, sex).equals(array)
+    assert array.sum_by(age, geo, sex, lipro).equals(array)
+
     # a) group aggregate on a fresh array
 
     # a.1) one group
@@ -2553,10 +2555,9 @@ def test_transpose():
     res = arr.transpose('b')
     assert res.axes == [b, a, c]
 
-    # using Ellipsis instead of ... to avoid a syntax error on Python 2 (where ... is only available within [])
-    res = arr.transpose(Ellipsis, 'a')
+    res = arr.transpose(..., 'a')
     assert res.axes == [b, c, a]
-    res = arr.transpose('c', Ellipsis, 'a')
+    res = arr.transpose('c', ..., 'a')
     assert res.axes == [c, b, a]
 
 
@@ -2604,24 +2605,19 @@ def test_binary_ops(small_array):
 
     with np.errstate(invalid='ignore'):
         raw_res = raw / raw
-    with pytest.warns(RuntimeWarning) as caught_warnings:
+
+    warn_msg = "invalid value (NaN) encountered during operation (this is typically caused by a 0 / 0)"
+    with must_warn(RuntimeWarning, msg=warn_msg):
         res = small_array / small_array
     assert_array_nan_equal(res, raw_res)
-    assert len(caught_warnings) == 1
-    warn_msg = "invalid value (NaN) encountered during operation (this is typically caused by a 0 / 0)"
-    assert caught_warnings[0].message.args[0] == warn_msg
-    assert caught_warnings[0].filename == __file__
 
     assert_array_equal(small_array / 2, raw / 2)
 
     with np.errstate(divide='ignore'):
         raw_res = 30 / raw
-    with pytest.warns(RuntimeWarning) as caught_warnings:
+    with must_warn(RuntimeWarning, msg="divide by zero encountered during operation"):
         res = 30 / small_array
     assert_array_equal(res, raw_res)
-    assert len(caught_warnings) == 1
-    assert caught_warnings[0].message.args[0] == "divide by zero encountered during operation"
-    assert caught_warnings[0].filename == __file__
 
     assert_array_equal(30 / (small_array + 1), 30 / (raw + 1))
 
@@ -2654,8 +2650,8 @@ def test_binary_ops(small_array):
 def test_binary_ops_no_name_axes(small_array):
     raw = small_array.data
     raw2 = small_array.data + 1
-    la = ndtest([Axis(l) for l in small_array.shape])
-    la2 = ndtest([Axis(l) for l in small_array.shape]) + 1
+    la = ndtest([Axis(label) for label in small_array.shape])
+    la2 = ndtest([Axis(label) for label in small_array.shape]) + 1
 
     assert_array_equal(la + la2, raw + raw2)
     assert_array_equal(la + 1, raw + 1)
@@ -2674,12 +2670,9 @@ def test_binary_ops_no_name_axes(small_array):
 
     with np.errstate(divide='ignore'):
         raw_res = 30 / raw
-    with pytest.warns(RuntimeWarning) as caught_warnings:
+    with must_warn(RuntimeWarning, msg="divide by zero encountered during operation"):
         res = 30 / la
     assert_array_equal(res, raw_res)
-    assert len(caught_warnings) == 1
-    assert caught_warnings[0].message.args[0] == "divide by zero encountered during operation"
-    assert caught_warnings[0].filename == __file__
 
     assert_array_equal(30 / (la + 1), 30 / (raw + 1))
 
@@ -2801,7 +2794,7 @@ def test_set_labels(small_array):
 
 
 def test_set_axes(small_array):
-    lipro2 = Axis([l.replace('P', 'Q') for l in lipro.labels], 'lipro2')
+    lipro2 = Axis([label.replace('P', 'Q') for label in lipro.labels], 'lipro2')
     sex2 = Axis(['Man', 'Woman'], 'sex2')
 
     la = Array(small_array.data, axes=(sex, lipro2))
@@ -3093,6 +3086,8 @@ def test_extend(small_array):
 
 @needs_pytables
 def test_hdf_roundtrip(tmpdir, meta):
+    import tables
+
     a = ndtest((2, 3), meta=meta)
     fpath = tmp_path(tmpdir, 'test.h5')
     a.to_hdf(fpath, 'a')
@@ -3119,21 +3114,29 @@ def test_hdf_roundtrip(tmpdir, meta):
     a3 = ndtest((4, 3, 4))
     fpath = tmp_path(tmpdir, 'test.h5')
     os.remove(fpath)
+
     # single element group
     for label in a3.a:
         a3[label].to_hdf(fpath, label)
+
     # unnamed group
     group = a3.c['c0,c2']
-    a3[group].to_hdf(fpath, group)
+    with must_warn(tables.NaturalNameWarning, check_file=False):
+        a3[group].to_hdf(fpath, group)
+
     # unnamed group + slice
     group = a3.c['c0::2']
-    a3[group].to_hdf(fpath, group)
+    with must_warn(tables.NaturalNameWarning, check_file=False):
+        a3[group].to_hdf(fpath, group)
+
     # named group
     group = a3.c['c0,c2'] >> 'even'
     a3[group].to_hdf(fpath, group)
+
     # group with name containing special characters (replaced by _)
     group = a3.c['c0,c2'] >> r':name?with*special/\[characters]'
-    a3[group].to_hdf(fpath, group)
+    with must_warn(tables.NaturalNameWarning, check_file=False):
+        a3[group].to_hdf(fpath, group)
 
     # passing group as key to read_hdf
     for label in a3.a:
@@ -3336,44 +3339,44 @@ def test_read_excel_xlwings():
     assert_array_equal(bad4, good2)
 
 
-@needs_xlrd
+@needs_openpyxl
 def test_read_excel_pandas():
-    arr = read_excel(inputpath('test.xlsx'), '1d', engine='xlrd')
+    arr = read_excel(inputpath('test.xlsx'), '1d', engine='openpyxl')
     assert_array_equal(arr, io_1d)
 
-    arr = read_excel(inputpath('test.xlsx'), '2d', engine='xlrd')
+    arr = read_excel(inputpath('test.xlsx'), '2d', engine='openpyxl')
     assert_array_equal(arr, io_2d)
 
-    arr = read_excel(inputpath('test.xlsx'), '2d', nb_axes=2, engine='xlrd')
+    arr = read_excel(inputpath('test.xlsx'), '2d', nb_axes=2, engine='openpyxl')
     assert_array_equal(arr, io_2d)
 
-    arr = read_excel(inputpath('test.xlsx'), '2d_classic', engine='xlrd')
+    arr = read_excel(inputpath('test.xlsx'), '2d_classic', engine='openpyxl')
     assert_array_equal(arr, ndtest("a=a0..a2; b0..b2"))
 
-    arr = read_excel(inputpath('test.xlsx'), '2d_classic', nb_axes=2, engine='xlrd')
+    arr = read_excel(inputpath('test.xlsx'), '2d_classic', nb_axes=2, engine='openpyxl')
     assert_array_equal(arr, ndtest("a=a0..a2; b0..b2"))
 
-    arr = read_excel(inputpath('test.xlsx'), '3d', index_col=[0, 1], engine='xlrd')
+    arr = read_excel(inputpath('test.xlsx'), '3d', index_col=[0, 1], engine='openpyxl')
     assert_array_equal(arr, io_3d)
 
-    arr = read_excel(inputpath('test.xlsx'), '3d', engine='xlrd')
+    arr = read_excel(inputpath('test.xlsx'), '3d', engine='openpyxl')
     assert_array_equal(arr, io_3d)
 
     # for > 2d, specifying nb_axes is required if there is no name for the horizontal axis
-    arr = read_excel(inputpath('test.xlsx'), '3d_classic', nb_axes=3, engine='xlrd')
+    arr = read_excel(inputpath('test.xlsx'), '3d_classic', nb_axes=3, engine='openpyxl')
     assert_array_equal(arr, ndtest("a=1..3; b=b0,b1; c0..c2"))
 
-    arr = read_excel(inputpath('test.xlsx'), 'int_labels', engine='xlrd')
+    arr = read_excel(inputpath('test.xlsx'), 'int_labels', engine='openpyxl')
     assert_array_equal(arr, io_int_labels)
 
     # passing a Group as sheet arg
     axis = Axis('dim=1d,2d,3d,5d')
 
-    arr = read_excel(inputpath('test.xlsx'), axis['1d'], engine='xlrd')
+    arr = read_excel(inputpath('test.xlsx'), axis['1d'], engine='openpyxl')
     assert_array_equal(arr, io_1d)
 
     # missing rows + fill_value argument
-    arr = read_excel(inputpath('test.xlsx'), 'missing_values', fill_value=42, engine='xlrd')
+    arr = read_excel(inputpath('test.xlsx'), 'missing_values', fill_value=42, engine='openpyxl')
     expected = io_missing_values.copy()
     expected[isnan(expected)] = 42
     assert_array_equal(arr, expected)
@@ -3381,46 +3384,25 @@ def test_read_excel_pandas():
     #################
     # narrow format #
     #################
-    arr = read_excel(inputpath('test_narrow.xlsx'), '1d', wide=False, engine='xlrd')
+    arr = read_excel(inputpath('test_narrow.xlsx'), '1d', wide=False, engine='openpyxl')
     assert_array_equal(arr, io_1d)
 
-    arr = read_excel(inputpath('test_narrow.xlsx'), '2d', wide=False, engine='xlrd')
+    arr = read_excel(inputpath('test_narrow.xlsx'), '2d', wide=False, engine='openpyxl')
     assert_array_equal(arr, io_2d)
 
-    arr = read_excel(inputpath('test_narrow.xlsx'), '3d', wide=False, engine='xlrd')
+    arr = read_excel(inputpath('test_narrow.xlsx'), '3d', wide=False, engine='openpyxl')
     assert_array_equal(arr, io_3d)
 
     # missing rows + fill_value argument
     arr = read_excel(inputpath('test_narrow.xlsx'), 'missing_values',
-                     fill_value=42, wide=False, engine='xlrd')
+                     fill_value=42, wide=False, engine='openpyxl')
     expected = io_narrow_missing_values.copy()
     expected[isnan(expected)] = 42
     assert_array_equal(arr, expected)
 
     # unsorted values
-    arr = read_excel(inputpath('test_narrow.xlsx'), 'unsorted', wide=False, engine='xlrd')
+    arr = read_excel(inputpath('test_narrow.xlsx'), 'unsorted', wide=False, engine='openpyxl')
     assert_array_equal(arr, io_unsorted)
-
-    #################
-    #  blank cells  #
-    #################
-
-    # Excel sheet with blank cells on right/bottom border of the array to read
-    fpath = inputpath('test_blank_cells.xlsx')
-    good1 = read_excel(fpath, 'good', engine='xlrd')
-    bad1 = read_excel(fpath, 'blanksafter_morerowsthancols', engine='xlrd')
-    bad2 = read_excel(fpath, 'blanksafter_morecolsthanrows', engine='xlrd')
-    assert_array_equal(bad1, good1)
-    assert_array_equal(bad2, good1)
-
-    # with additional empty column in the middle of the array to read
-    good2 = ndtest('a=a0,a1;b=2003..2006').astype(float)
-    good2[2005] = nan
-    good2 = good2.set_axes('b', Axis([2003, 2004, 'Unnamed: 3', 2006], 'b'))
-    bad3 = read_excel(fpath, 'middleblankcol', engine='xlrd')
-    bad4 = read_excel(fpath, '16384col', engine='xlrd')
-    assert_array_nan_equal(bad3, good2)
-    assert_array_nan_equal(bad4, good2)
 
 
 def test_from_lists():
@@ -3644,7 +3626,7 @@ def test_from_frame():
     # Dataframe becomes 1D Array
     data = np.arange(size)
     indexes = ['i0']
-    columns = ['c{}'.format(i) for i in range(size)]
+    columns = [f'c{i}' for i in range(size)]
     axis_index, axis_columns = Axis(indexes), Axis(columns)
 
     df = pd.DataFrame(data.reshape(1, size), index=indexes, columns=columns)
@@ -3734,7 +3716,7 @@ def test_from_frame():
     # ==================================
     # Dataframe becomes 2D Array
     data = data.reshape(size, 1)
-    indexes = ['i{}'.format(i) for i in range(size)]
+    indexes = [f'i{i}' for i in range(size)]
     columns = ['c0']
     axis_index, axis_columns = Axis(indexes), Axis(columns)
 
@@ -3962,6 +3944,7 @@ def test_to_csv(tmpdir):
 
 
 @needs_xlsxwriter
+@needs_openpyxl
 def test_to_excel_xlsxwriter(tmpdir):
     fpath = tmp_path(tmpdir, 'test_to_excel_xlsxwriter.xlsx')
 
@@ -3970,18 +3953,18 @@ def test_to_excel_xlsxwriter(tmpdir):
 
     # fpath/Sheet1/A1
     a1.to_excel(fpath, overwrite_file=True, engine='xlsxwriter')
-    res = read_excel(fpath, engine='xlrd')
+    res = read_excel(fpath, engine='openpyxl')
     assert_array_equal(res, a1)
 
     # fpath/Sheet1/A1(transposed)
     a1.to_excel(fpath, transpose=True, engine='xlsxwriter')
-    res = read_excel(fpath, engine='xlrd')
+    res = read_excel(fpath, engine='openpyxl')
     assert_array_equal(res, a1)
 
     # fpath/Sheet1/A1
     # stacked data (one column containing all the values and another column listing the context of the value)
     a1.to_excel(fpath, wide=False, engine='xlsxwriter')
-    res = read_excel(fpath, engine='xlrd')
+    res = read_excel(fpath, engine='openpyxl')
     stacked_a1 = a1.reshape([a1.a, Axis(['value'])])
     assert_array_equal(res, stacked_a1)
 
@@ -3990,18 +3973,18 @@ def test_to_excel_xlsxwriter(tmpdir):
 
     # fpath/Sheet1/A1
     a2.to_excel(fpath, overwrite_file=True, engine='xlsxwriter')
-    res = read_excel(fpath, engine='xlrd')
+    res = read_excel(fpath, engine='openpyxl')
     assert_array_equal(res, a2)
 
     # fpath/Sheet1/A10
     # TODO: this is currently not supported (though we would only need to translate A10 to startrow=0 and startcol=0
     # a2.to_excel('fpath', 'Sheet1', 'A10', engine='xlsxwriter')
-    # res = read_excel('fpath', 'Sheet1', engine='xlrd', skiprows=9)
+    # res = read_excel('fpath', 'Sheet1', engine='openpyxl', skiprows=9)
     # assert_array_equal(res, a2)
 
     # fpath/other/A1
     a2.to_excel(fpath, 'other', engine='xlsxwriter')
-    res = read_excel(fpath, 'other', engine='xlrd')
+    res = read_excel(fpath, 'other', engine='openpyxl')
     assert_array_equal(res, a2)
 
     # 3D
@@ -4011,18 +3994,18 @@ def test_to_excel_xlsxwriter(tmpdir):
     # FIXME: merge_cells=False should be the default (until Pandas is fixed to read its format)
     a3.to_excel(fpath, overwrite_file=True, engine='xlsxwriter', merge_cells=False)
     # a3.to_excel('fpath', overwrite_file=True, engine='openpyxl')
-    res = read_excel(fpath, engine='xlrd')
+    res = read_excel(fpath, engine='openpyxl')
     assert_array_equal(res, a3)
 
     # fpath/Sheet1/A20
     # TODO: implement position (see above)
     # a3.to_excel('fpath', 'Sheet1', 'A20', engine='xlsxwriter', merge_cells=False)
-    # res = read_excel('fpath', 'Sheet1', engine='xlrd', skiprows=19)
+    # res = read_excel('fpath', 'Sheet1', engine='openpyxl', skiprows=19)
     # assert_array_equal(res, a3)
 
     # fpath/other/A1
     a3.to_excel(fpath, 'other', engine='xlsxwriter', merge_cells=False)
-    res = read_excel(fpath, 'other', engine='xlrd')
+    res = read_excel(fpath, 'other', engine='openpyxl')
     assert_array_equal(res, a3)
 
     # 1D
@@ -4030,18 +4013,18 @@ def test_to_excel_xlsxwriter(tmpdir):
 
     # fpath/Sheet1/A1
     a1.to_excel(fpath, overwrite_file=True, engine='xlsxwriter')
-    res = read_excel(fpath, engine='xlrd')
+    res = read_excel(fpath, engine='openpyxl')
     assert_array_equal(res, a1)
 
     # fpath/Sheet1/A1(transposed)
     a1.to_excel(fpath, transpose=True, engine='xlsxwriter')
-    res = read_excel(fpath, engine='xlrd')
+    res = read_excel(fpath, engine='openpyxl')
     assert_array_equal(res, a1)
 
     # fpath/Sheet1/A1
     # stacked data (one column containing all the values and another column listing the context of the value)
     a1.to_excel(fpath, wide=False, engine='xlsxwriter')
-    res = read_excel(fpath, engine='xlrd')
+    res = read_excel(fpath, engine='openpyxl')
     stacked_a1 = a1.reshape([a1.a, Axis(['value'])])
     assert_array_equal(res, stacked_a1)
 
@@ -4050,18 +4033,18 @@ def test_to_excel_xlsxwriter(tmpdir):
 
     # fpath/Sheet1/A1
     a2.to_excel(fpath, overwrite_file=True, engine='xlsxwriter')
-    res = read_excel(fpath, engine='xlrd')
+    res = read_excel(fpath, engine='openpyxl')
     assert_array_equal(res, a2)
 
     # fpath/Sheet1/A10
     # TODO: this is currently not supported (though we would only need to translate A10 to startrow=0 and startcol=0
     # a2.to_excel(fpath, 'Sheet1', 'A10', engine='xlsxwriter')
-    # res = read_excel('fpath', 'Sheet1', engine='xlrd', skiprows=9)
+    # res = read_excel('fpath', 'Sheet1', engine='openpyxl', skiprows=9)
     # assert_array_equal(res, a2)
 
     # fpath/other/A1
     a2.to_excel(fpath, 'other', engine='xlsxwriter')
-    res = read_excel(fpath, 'other', engine='xlrd')
+    res = read_excel(fpath, 'other', engine='openpyxl')
     assert_array_equal(res, a2)
 
     # 3D
@@ -4071,18 +4054,18 @@ def test_to_excel_xlsxwriter(tmpdir):
     # FIXME: merge_cells=False should be the default (until Pandas is fixed to read its format)
     a3.to_excel(fpath, overwrite_file=True, engine='xlsxwriter', merge_cells=False)
     # a3.to_excel('fpath', overwrite_file=True, engine='openpyxl')
-    res = read_excel(fpath, engine='xlrd')
+    res = read_excel(fpath, engine='openpyxl')
     assert_array_equal(res, a3)
 
     # fpath/Sheet1/A20
     # TODO: implement position (see above)
     # a3.to_excel('fpath', 'Sheet1', 'A20', engine='xlsxwriter', merge_cells=False)
-    # res = read_excel('fpath', 'Sheet1', engine='xlrd', skiprows=19)
+    # res = read_excel('fpath', 'Sheet1', engine='openpyxl', skiprows=19)
     # assert_array_equal(res, a3)
 
     # fpath/other/A1
     a3.to_excel(fpath, 'other', engine='xlsxwriter', merge_cells=False)
-    res = read_excel(fpath, 'other', engine='xlrd')
+    res = read_excel(fpath, 'other', engine='openpyxl')
     assert_array_equal(res, a3)
 
     # passing group as sheet_name
@@ -4106,6 +4089,7 @@ def test_to_excel_xlsxwriter(tmpdir):
 
 
 @needs_xlwings
+@needs_openpyxl
 def test_to_excel_xlwings(tmpdir):
     fpath = tmp_path(tmpdir, 'test_to_excel_xlwings.xlsx')
 
@@ -4119,19 +4103,19 @@ def test_to_excel_xlwings(tmpdir):
     if os.path.isfile(fpath):
         os.remove(fpath)
     a1.to_excel(fpath, engine='xlwings')
-    # we use xlrd to read back instead of xlwings even if that should work, to make the test faster
-    res = read_excel(fpath, engine='xlrd')
+    # we use openpyxl to read back instead of xlwings even if that should work, to make the test faster
+    res = read_excel(fpath, engine='openpyxl')
     assert_array_equal(res, a1)
 
     # fpath/Sheet1/A1(transposed)
     a1.to_excel(fpath, transpose=True, engine='xlwings')
-    res = read_excel(fpath, engine='xlrd')
+    res = read_excel(fpath, engine='openpyxl')
     assert_array_equal(res, a1)
 
     # fpath/Sheet1/A1
     # stacked data (one column containing all the values and another column listing the context of the value)
     a1.to_excel(fpath, wide=False, engine='xlwings')
-    res = read_excel(fpath, engine='xlrd')
+    res = read_excel(fpath, engine='openpyxl')
     assert_array_equal(res, a1)
 
     # 2D
@@ -4139,22 +4123,22 @@ def test_to_excel_xlwings(tmpdir):
 
     # fpath/Sheet1/A1
     a2.to_excel(fpath, overwrite_file=True, engine='xlwings')
-    res = read_excel(fpath, engine='xlrd')
+    res = read_excel(fpath, engine='openpyxl')
     assert_array_equal(res, a2)
 
     # fpath/Sheet1/A10
     a2.to_excel(fpath, 'Sheet1', 'A10', engine='xlwings')
-    res = read_excel(fpath, 'Sheet1', engine='xlrd', skiprows=9)
+    res = read_excel(fpath, 'Sheet1', engine='openpyxl', skiprows=9)
     assert_array_equal(res, a2)
 
     # fpath/other/A1
     a2.to_excel(fpath, 'other', engine='xlwings')
-    res = read_excel(fpath, 'other', engine='xlrd')
+    res = read_excel(fpath, 'other', engine='openpyxl')
     assert_array_equal(res, a2)
 
     # transpose
     a2.to_excel(fpath, 'transpose', transpose=True, engine='xlwings')
-    res = read_excel(fpath, 'transpose', engine='xlrd')
+    res = read_excel(fpath, 'transpose', engine='openpyxl')
     assert_array_equal(res, a2.T)
 
     # 3D
@@ -4162,17 +4146,17 @@ def test_to_excel_xlwings(tmpdir):
 
     # fpath/Sheet1/A1
     a3.to_excel(fpath, overwrite_file=True, engine='xlwings')
-    res = read_excel(fpath, engine='xlrd')
+    res = read_excel(fpath, engine='openpyxl')
     assert_array_equal(res, a3)
 
     # fpath/Sheet1/A20
     a3.to_excel(fpath, 'Sheet1', 'A20', engine='xlwings')
-    res = read_excel(fpath, 'Sheet1', engine='xlrd', skiprows=19)
+    res = read_excel(fpath, 'Sheet1', engine='openpyxl', skiprows=19)
     assert_array_equal(res, a3)
 
     # fpath/other/A1
     a3.to_excel(fpath, 'other', engine='xlwings')
-    res = read_excel(fpath, 'other', engine='xlrd')
+    res = read_excel(fpath, 'other', engine='openpyxl')
     assert_array_equal(res, a3)
 
     # passing group as sheet_name
@@ -4560,35 +4544,32 @@ def test_diag():
     assert d.i[1] == 1.0
 
 
-@needs_python35
 def test_matmul():
     # 2D / anonymous axes
     a1 = ndtest([Axis(3), Axis(3)])
     a2 = eye(3, 3) * 2
 
-    # Note that we cannot use @ because that is an invalid syntax in Python 2
-
     # Array value
-    assert_array_equal(a1.__matmul__(a2), ndtest([Axis(3), Axis(3)]) * 2)
+    assert_array_equal(a1 @ a2, ndtest([Axis(3), Axis(3)]) * 2)
 
     # ndarray value
-    assert_array_equal(a1.__matmul__(a2.data), ndtest([Axis(3), Axis(3)]) * 2)
+    assert_array_equal(a1 @ a2.data, ndtest([Axis(3), Axis(3)]) * 2)
 
     # non anonymous axes (N <= 2)
     arr1d = ndtest(3)
     arr2d = ndtest((3, 3))
 
     # 1D @ 1D
-    res = arr1d.__matmul__(arr1d)
+    res = arr1d @ arr1d
     assert isinstance(res, np.integer)
     assert res == 5
 
     # 1D @ 2D
-    assert_array_equal(arr1d.__matmul__(arr2d),
+    assert_array_equal(arr1d @ arr2d,
                        Array([15, 18, 21], 'b=b0..b2'))
 
     # 2D @ 1D
-    assert_array_equal(arr2d.__matmul__(arr1d),
+    assert_array_equal(arr2d @ arr1d,
                        Array([5, 14, 23], 'a=a0..a2'))
 
     # 2D(a,b) @ 2D(a,b) -> 2D(a,b)
@@ -4596,20 +4577,18 @@ def test_matmul():
                       ['a0', 15, 18, 21],
                       ['a1', 42, 54, 66],
                       ['a2', 69, 90, 111]])
-    assert_array_equal(arr2d.__matmul__(arr2d), res)
+    assert_array_equal(arr2d @ arr2d, res)
 
     # 2D(a,b) @ 2D(b,a) -> 2D(a,a)
     res = from_lists([['a\\a', 'a0', 'a1', 'a2'],
                       ['a0', 5, 14, 23],
                       ['a1', 14, 50, 86],
                       ['a2', 23, 86, 149]])
-    assert_array_equal(arr2d.__matmul__(arr2d.T), res)
+    assert_array_equal(arr2d @ arr2d.T, res)
 
     # ndarray value
-    assert_array_equal(arr1d.__matmul__(arr2d.data),
-                       Array([15, 18, 21]))
-    assert_array_equal(arr2d.data.__matmul__(arr2d.T.data),
-                       res.data)
+    assert_array_equal(arr1d @ arr2d.data, Array([15, 18, 21]))
+    assert_array_equal(arr2d.data @ arr2d.T.data, res.data)
 
     # different axes
     a1 = ndtest('a=a0..a1;b=b0..b2')
@@ -4617,7 +4596,7 @@ def test_matmul():
     res = from_lists([[r'a\c', 'c0', 'c1', 'c2', 'c3'],
                       ['a0', 20, 23, 26, 29],
                       ['a1', 56, 68, 80, 92]])
-    assert_array_equal(a1.__matmul__(a2), res)
+    assert_array_equal(a1 @ a2, res)
 
     # non anonymous axes (N >= 2)
     arr2d = ndtest((2, 2))
@@ -4646,7 +4625,7 @@ def test_matmul():
                       ['a1', 'b1', 'e0', 'c1', 30, 59],
                       ['a1', 'b1', 'e1', 'c0', 126, 151],
                       ['a1', 'b1', 'e1', 'c1', 146, 175]])
-    assert_array_equal(arr4d.__matmul__(arr3d), res)
+    assert_array_equal(arr4d @ arr3d, res)
 
     # 3D(e, d, f) @ 4D(a, b, c, d) -> 5D(e, a, b, d, d)
     res = from_lists([['e', 'a', 'b', 'd\\d', 'd0', 'd1'],
@@ -4666,7 +4645,7 @@ def test_matmul():
                       ['e1', 'a1', 'b0', 'd1', 118, 131],
                       ['e1', 'a1', 'b1', 'd0', 118, 127],
                       ['e1', 'a1', 'b1', 'd1', 170, 183]])
-    assert_array_equal(arr3d.__matmul__(arr4d), res)
+    assert_array_equal(arr3d @ arr4d, res)
 
     # 4D(a, b, c, d) @ 3D(b, d, f) -> 4D(a, b, c, f)
     arr3d = arr3d.set_axes([b, d, f])
@@ -4679,7 +4658,7 @@ def test_matmul():
                       ['a1', 'b0', 'c1', 22, 43],
                       ['a1', 'b1', 'c0', 126, 151],
                       ['a1', 'b1', 'c1', 146, 175]])
-    assert_array_equal(arr4d.__matmul__(arr3d), res)
+    assert_array_equal(arr4d @ arr3d, res)
 
     # 3D(b, d, f) @ 4D(a, b, c, d) -> 4D(b, a, d, d)
     res = from_lists([['b', 'a', 'd\\d', 'd0', 'd1'],
@@ -4691,7 +4670,7 @@ def test_matmul():
                       ['b1', 'a0', 'd1', 66, 79],
                       ['b1', 'a1', 'd0', 118, 127],
                       ['b1', 'a1', 'd1', 170, 183]])
-    assert_array_equal(arr3d.__matmul__(arr4d), res)
+    assert_array_equal(arr3d @ arr4d, res)
 
     # 4D(a, b, c, d) @ 2D(d, f) -> 5D(a, b, c, f)
     arr2d = arr2d.set_axes([d, f])
@@ -4704,7 +4683,7 @@ def test_matmul():
                       ['a1', 'b0', 'c1', 22, 43],
                       ['a1', 'b1', 'c0', 26, 51],
                       ['a1', 'b1', 'c1', 30, 59]])
-    assert_array_equal(arr4d.__matmul__(arr2d), res)
+    assert_array_equal(arr4d @ arr2d, res)
 
     # 2D(d, f) @ 4D(a, b, c, d) -> 5D(a, b, d, d)
     res = from_lists([['a', 'b', 'd\\d', 'd0', 'd1'],
@@ -4716,10 +4695,9 @@ def test_matmul():
                       ['a1', 'b0', 'd1', 46, 51],
                       ['a1', 'b1', 'd0', 14, 15],
                       ['a1', 'b1', 'd1', 66, 71]])
-    assert_array_equal(arr2d.__matmul__(arr4d), res)
+    assert_array_equal(arr2d @ arr4d, res)
 
 
-@needs_python35
 def test_rmatmul():
     a1 = eye(3) * 2
     a2 = ndtest([Axis(3), Axis(3)])
@@ -4930,7 +4908,7 @@ def test_split_axes():
 
     # labels with object dtype
     arr = ndtest((2, 2, 2)).combine_axes(('a', 'b'))
-    arr = arr.set_axes([Axis(a.labels.astype(object), a.name) for a in arr.axes])
+    arr = arr.set_axes([a.astype(object) for a in arr.axes])
 
     res = arr.split_axes()
     expected_kind = 'U' if sys.version_info[0] >= 3 else 'S'
@@ -5007,12 +4985,12 @@ def test_stack():
                       [0, 1]], [a, b])
     assert_array_equal(res, expected)
 
-    # giving elements as on Array containing Arrays
+    # giving elements as an Array containing Arrays
     sex = Axis('sex=M,F')
     # not using the same length for nat and type, otherwise numpy gets confused :(
     arr1 = ones('nat=BE, FO')
     arr2 = zeros('type=1..3')
-    array_of_arrays = Array([arr1, arr2], sex)
+    array_of_arrays = Array([arr1, arr2], sex, dtype=object)
     res = stack(array_of_arrays, sex)
     expected = from_string(r"""nat  type\sex    M    F
                                 BE         1  1.0  0.0
@@ -5077,7 +5055,6 @@ def test_stack():
     assert_array_equal(res, expected)
 
 
-@needs_python36
 def test_stack_kwargs_no_axis_labels():
     # these tests rely on kwargs ordering, hence python 3.6
 
@@ -5170,17 +5147,11 @@ def test_0darray_convert():
 
 
 def test_deprecated_methods():
-    with pytest.warns(FutureWarning) as caught_warnings:
+    with must_warn(FutureWarning, msg="with_axes() is deprecated. Use set_axes() instead."):
         ndtest((2, 2)).with_axes('a', 'd=d0,d1')
-    assert len(caught_warnings) == 1
-    assert caught_warnings[0].message.args[0] == "with_axes() is deprecated. Use set_axes() instead."
-    assert caught_warnings[0].filename == __file__
 
-    with pytest.warns(FutureWarning) as caught_warnings:
+    with must_warn(FutureWarning, msg="split_axis() is deprecated. Use split_axes() instead."):
         ndtest((2, 2)).combine_axes().split_axis()
-    assert len(caught_warnings) == 1
-    assert caught_warnings[0].message.args[0] == "split_axis() is deprecated. Use split_axes() instead."
-    assert caught_warnings[0].filename == __file__
 
 
 def test_eq():

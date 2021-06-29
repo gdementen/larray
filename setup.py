@@ -9,7 +9,7 @@ def readlocal(fname):
 
 
 DISTNAME = 'larray'
-VERSION = '0.32.1-dev'
+VERSION = '0.33-dev'
 AUTHOR = 'Gaetan de Menten, Geert Bryon, Johan Duyck, Alix Damman'
 AUTHOR_EMAIL = 'gdementen@gmail.com'
 DESCRIPTION = "N-D labeled arrays in Python"
@@ -18,7 +18,7 @@ SETUP_REQUIRES = []
 # - pandas >= 0.20.0 is required since commit 01669f2024a7bffe47cceec0a0fd845f71b6f7cc
 #   (issue 702 : fixed bug when writing metadata using HDF format)
 INSTALL_REQUIRES = ['numpy >= 1.13', 'pandas >= 0.20.0']
-TESTS_REQUIRE = ['pytest', 'pytest-pep8']
+TESTS_REQUIRE = ['pytest', 'pytest-flake8']
 
 LICENSE = 'GPLv3'
 URL = 'https://github.com/larray-project/larray'
@@ -30,12 +30,10 @@ CLASSIFIERS = [
     'Intended Audience :: Science/Research',
     'Intended Audience :: Developers',
     'Programming Language :: Python',
-    'Programming Language :: Python :: 2',
-    'Programming Language :: Python :: 2.7',
     'Programming Language :: Python :: 3',
-    'Programming Language :: Python :: 3.5',
     'Programming Language :: Python :: 3.6',
     'Programming Language :: Python :: 3.7',
+    'Programming Language :: Python :: 3.8',
     'Topic :: Scientific/Engineering',
     'Topic :: Software Development :: Libraries',
 ]

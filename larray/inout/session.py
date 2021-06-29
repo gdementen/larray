@@ -1,7 +1,3 @@
-from __future__ import absolute_import, division, print_function
-
-from larray.util.compat import basestring
-
 
 handler_classes = {}
 ext_default_engine = {}
@@ -22,7 +18,7 @@ def register_file_handler(engine, extensions=None):
             handler_classes[engine] = cls
         if extensions is None:
             exts = []
-        elif isinstance(extensions, basestring):
+        elif isinstance(extensions, str):
             exts = [extensions]
         else:
             exts = extensions
@@ -34,6 +30,6 @@ def register_file_handler(engine, extensions=None):
 
 def get_file_handler(engine):
     if engine not in handler_classes:
-        raise TypeError("Engine {} is currently not implemented".format(engine))
+        raise TypeError(f"Engine {engine} is currently not implemented")
     file_handler_cls = handler_classes[engine]
     return file_handler_cls

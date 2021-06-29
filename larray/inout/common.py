@@ -1,9 +1,20 @@
-from __future__ import absolute_import, print_function
-
 import os
+from datetime import date, time, datetime
 from collections import OrderedDict
 
+from larray.core.axis import Axis
+from larray.core.group import Group
 from larray.core.array import Array
+
+
+# all formats
+_supported_larray_types = (Axis, Group, Array)
+
+# only for HDF5 and pickle formats
+# support list, tuple and dict?
+_supported_scalars_types = (int, float, bool, bytes, str, date, time, datetime)
+_supported_types = _supported_larray_types + _supported_scalars_types
+_supported_typenames = {cls.__name__ for cls in _supported_types}
 
 
 def _get_index_col(nb_axes=None, index_col=None, wide=True):
@@ -83,7 +94,8 @@ class FileHandler(object):
     def _get_original_file_name(self):
         if self.overwrite_file and os.path.isfile(self.fname):
             self.original_file_name = self.fname
-            self.fname = '{}~{}'.format(*os.path.splitext(self.fname))
+            fname, ext = os.path.splitext(self.fname)
+            self.fname = f'{fname}~{ext}'
 
     def _update_original_file(self):
         if self.original_file_name is not None and os.path.isfile(self.fname):
@@ -157,7 +169,7 @@ class FileHandler(object):
         for key, value in key_values:
             if isinstance(value, Array) and value.ndim == 0:
                 if display:
-                    print('Cannot dump {}. Dumping 0D arrays is currently not supported.'.format(key))
+                    print(f'Cannot dump {key}. Dumping 0D arrays is currently not supported.')
                 continue
             try:
                 if display:
@@ -167,7 +179,7 @@ class FileHandler(object):
                     print("done")
             except TypeError:
                 if display:
-                    print("Cannot dump {}. {} is not a supported type".format(key, type(value).__name__))
+                    print(f"Cannot dump {key}. {type(value).__name__} is not a supported type")
         self.save()
         self.close()
         self._update_original_file()

@@ -1,5 +1,3 @@
-from __future__ import absolute_import, print_function
-
 from itertools import product
 
 import numpy as np
@@ -9,7 +7,14 @@ from larray.core.array import Array
 from larray.core.axis import Axis, AxisCollection
 from larray.core.constants import nan
 from larray.util.misc import unique
-from larray.util.compat import basestring, decode, bytes
+
+
+def decode(s, encoding='utf-8', errors='strict'):
+    if isinstance(s, bytes):
+        return s.decode(encoding, errors)
+    else:
+        assert s is None or isinstance(s, str), "unexpected " + str(type(s))
+        return s
 
 
 def parse(s):
@@ -17,7 +22,7 @@ def parse(s):
     Used to parse the "folded" axis ticks (usually periods).
     """
     # parameters can be strings or numbers
-    if isinstance(s, basestring):
+    if isinstance(s, str):
         s = s.strip()
         low = s.lower()
         if low == 'true':
@@ -39,13 +44,13 @@ def index_to_labels(idx, sort=True):
     r"""
     Returns unique labels for each dimension.
     """
-    if isinstance(idx, pd.core.index.MultiIndex):
+    if isinstance(idx, pd.MultiIndex):
         if sort:
             return list(idx.levels)
         else:
-            return [list(unique(idx.get_level_values(l))) for l in range(idx.nlevels)]
+            return [list(unique(idx.get_level_values(label))) for label in range(idx.nlevels)]
     else:
-        assert isinstance(idx, pd.core.index.Index)
+        assert isinstance(idx, pd.Index)
         labels = list(idx.values)
         return [sorted(labels) if sort else labels]
 
@@ -53,7 +58,7 @@ def index_to_labels(idx, sort=True):
 def cartesian_product_df(df, sort_rows=False, sort_columns=False, fill_value=nan, **kwargs):
     idx = df.index
     labels = index_to_labels(idx, sort=sort_rows)
-    if isinstance(idx, pd.core.index.MultiIndex):
+    if isinstance(idx, pd.MultiIndex):
         if sort_rows:
             new_index = pd.MultiIndex.from_product(labels)
         else:
@@ -118,14 +123,14 @@ def from_series(s, sort_rows=False, fill_value=nan, meta=None, **kwargs):
     a1   b0  4.0  5.0
     a1   b1  6.0  7.0
     """
-    if isinstance(s.index, pd.core.index.MultiIndex):
+    if isinstance(s.index, pd.MultiIndex):
         # TODO: use argument sort=False when it will be available
         # (see https://github.com/pandas-dev/pandas/issues/15105)
         df = s.unstack(level=-1, fill_value=fill_value)
         # pandas (un)stack and pivot(_table) methods return a Dataframe/Series with sorted index and columns
         if not sort_rows:
             labels = index_to_labels(s.index, sort=False)
-            if isinstance(df.index, pd.core.index.MultiIndex):
+            if isinstance(df.index, pd.MultiIndex):
                 index = pd.MultiIndex.from_tuples(list(product(*labels[:-1])), names=s.index.names[:-1])
             else:
                 index = labels[0]
@@ -223,7 +228,7 @@ def from_frame(df, sort_rows=False, sort_columns=False, parse_header=False, unfo
 
     # handle 2 or more dimensions with the last axis name given using \
     if unfold_last_axis_name:
-        if isinstance(axes_names[-1], basestring) and '\\' in axes_names[-1]:
+        if isinstance(axes_names[-1], str) and '\\' in axes_names[-1]:
             last_axes = [name.strip() for name in axes_names[-1].split('\\')]
             axes_names = axes_names[:-1] + last_axes
         else:
@@ -317,7 +322,7 @@ def df_asarray(df, sort_rows=False, sort_columns=False, raw=False, parse_header=
         if wide:
             try:
                 # take the first column which contains '\'
-                pos_last = next(i for i, v in enumerate(columns) if isinstance(v, basestring) and '\\' in v)
+                pos_last = next(i for i, v in enumerate(columns) if isinstance(v, str) and '\\' in v)
             except StopIteration:
                 # we assume first column will not contain data
                 pos_last = 0
@@ -333,7 +338,7 @@ def df_asarray(df, sort_rows=False, sort_columns=False, raw=False, parse_header=
 
     # handle 1D arrays
     if len(df) == 1 and (pd.isnull(df.index.values[0]) or
-                         (isinstance(df.index.values[0], basestring) and df.index.values[0].strip() == '')):
+                         (isinstance(df.index.values[0], str) and df.index.values[0].strip() == '')):
         if parse_header:
             df.columns = pd.Index([parse(cell) for cell in df.columns.values], name=df.columns.name)
         series = df.iloc[0]
@@ -349,7 +354,7 @@ def df_asarray(df, sort_rows=False, sort_columns=False, raw=False, parse_header=
                 name = None
             return name
         axes_names = [parse_axis_name(name) for name in df.index.names]
-        unfold_last_axis_name = isinstance(axes_names[-1], basestring) and '\\' in axes_names[-1]
+        unfold_last_axis_name = isinstance(axes_names[-1], str) and '\\' in axes_names[-1]
         res = from_frame(df, sort_rows=sort_rows, sort_columns=sort_columns, parse_header=parse_header,
                          unfold_last_axis_name=unfold_last_axis_name, cartesian_prod=cartesian_prod, **kwargs)
 
@@ -358,6 +363,6 @@ def df_asarray(df, sort_rows=False, sort_columns=False, raw=False, parse_header=
     # make them roundtrip correctly, based on the assumption that in an in-memory LArray an anonymouse axis is more
     # likely and useful than an Axis with an empty name.
     # TODO : find a more robust and elegant solution
-    res = res.rename({axis: None for axis in res.axes if isinstance(axis.name, basestring) and
+    res = res.rename({axis: None for axis in res.axes if isinstance(axis.name, str) and
                       (axis.name == '' or 'Unnamed:' in axis.name)})
     return res
